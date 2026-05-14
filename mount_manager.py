@@ -1,0 +1,1170 @@
+#!/usr/bin/env python3
+"""GTK4 SMB mount manager.
+
+Run directly with:
+
+    python3 mount_manager.py
+
+The GUI runs as the desktop user. Create/delete actions call a hidden helper
+mode through pkexec so only the system-changing work runs as root.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import hashlib
+import json
+import os
+import pwd
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+
+APP_NAME = "SMB Mount Manager"
+APP_ID = "io.github.ublue_os.mount-manager"
+COLOR_SCHEME_ENV = "MOUNT_MANAGER_COLOR_SCHEME"
+APP_ICON_NAME = APP_ID
+
+MANAGED_ROOT = Path("/etc/mount-manager")
+CREDENTIALS_DIR = MANAGED_ROOT / "credentials"
+METADATA_DIR = MANAGED_ROOT / "mounts"
+MOUNT_ROOT = Path("/mnt/mount-manager").resolve(strict=False)
+SYSTEMD_DIR = Path("/etc/systemd/system")
+SMB_PORT = 445
+CONNECT_TIMEOUT_SECONDS = 4.0
+MOUNT_TIMEOUT_SECONDS = 5
+
+APP_CSS = """
+window {
+  background: @theme_bg_color;
+  color: @theme_fg_color;
+}
+
+headerbar {
+  background: @theme_base_color;
+  color: @theme_text_color;
+}
+
+.mount-root {
+  background: @theme_bg_color;
+}
+
+.boxed-list {
+  background: @theme_base_color;
+  color: @theme_text_color;
+  border: 1px solid alpha(@theme_fg_color, 0.16);
+  border-radius: 8px;
+}
+
+.boxed-list row {
+  background: transparent;
+  color: @theme_text_color;
+}
+
+.boxed-list row:not(:last-child) {
+  border-bottom: 1px solid alpha(@theme_fg_color, 0.10);
+}
+
+.dim-label {
+  opacity: 0.72;
+}
+
+.error {
+  color: #c01c28;
+}
+
+.success {
+  color: #26a269;
+}
+
+button.add-share-button {
+  font-weight: 700;
+}
+"""
+
+HOST_RE = re.compile(
+    r"^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+)
+SHARE_RE = re.compile(r"^[A-Za-z0-9._$-]{1,80}$")
+SMB_PATH_RE = re.compile(r"^//([^/\\]+)/([^/\\]+)$")
+MANAGER_ID_RE = re.compile(r"^[a-f0-9]{16}$")
+
+
+class MountManagerError(Exception):
+    """Base exception for user-facing errors."""
+
+
+class ValidationError(MountManagerError):
+    """Raised when user input is not acceptable."""
+
+
+class CommandError(MountManagerError):
+    """Raised when an external command fails."""
+
+
+@dataclasses.dataclass(frozen=True)
+class SharePath:
+    host: str
+    share: str
+
+    @property
+    def source(self) -> str:
+        return f"//{self.host}/{self.share}"
+
+
+@dataclasses.dataclass(frozen=True)
+class ManagedMount:
+    manager_id: str
+    source: str
+    host: str
+    share: str
+    mount_point: Path
+    unit_name: str
+    credential_path: Path
+    metadata_path: Path
+    creator_uid: int
+    creator_gid: int
+    active: bool = False
+    status: str = "Unknown"
+
+
+def parse_share_path(raw_value: str) -> SharePath:
+    value = raw_value.strip()
+    if not value:
+        raise ValidationError("Enter a share path like //nas.local/media.")
+    if "\\" in value:
+        raise ValidationError("Use forward slashes only, for example //nas.local/media.")
+    if not value.startswith("//"):
+        raise ValidationError("Share path must start with //, for example //nas.local/media.")
+
+    match = SMB_PATH_RE.fullmatch(value)
+    if not match:
+        raise ValidationError("Use exactly //hostname/share with no extra path segments.")
+
+    host, share = match.groups()
+    host = host.lower()
+
+    if host in {".", ".."} or share in {".", ".."}:
+        raise ValidationError("Host and share names cannot be . or ...")
+    if ".." in host.split("."):
+        raise ValidationError("Host name is not valid.")
+    if not HOST_RE.fullmatch(host):
+        raise ValidationError("Host must be a hostname or IPv4 address, such as nas.local.")
+    if not SHARE_RE.fullmatch(share):
+        raise ValidationError("Share may contain only letters, numbers, dots, underscores, dashes, and $.")
+
+    return SharePath(host=host, share=share)
+
+
+def validate_credentials(username: str, password: str) -> tuple[str, str]:
+    username = username.strip()
+    if not username:
+        raise ValidationError("Username is required.")
+    if not password:
+        raise ValidationError("Password is required.")
+    for label, value in (("Username", username), ("Password", password)):
+        if "\n" in value or "\r" in value or "\0" in value:
+            raise ValidationError(f"{label} cannot contain line breaks or null bytes.")
+    return username, password
+
+
+def original_user_ids() -> tuple[int, int]:
+    uid_text = os.environ.get("PKEXEC_UID") or os.environ.get("SUDO_UID")
+    gid_text = os.environ.get("SUDO_GID")
+
+    uid = int(uid_text) if uid_text is not None else os.getuid()
+    if gid_text is not None:
+        gid = int(gid_text)
+    else:
+        gid = pwd.getpwuid(uid).pw_gid
+    return uid, gid
+
+
+def manager_id_for(share_path: SharePath) -> str:
+    digest = hashlib.sha256(share_path.source.encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            args,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise CommandError(f"Required command not found: {args[0]}") from exc
+
+    if check and result.returncode != 0:
+        details = (result.stderr or result.stdout).strip()
+        if not details:
+            details = f"exit code {result.returncode}"
+        raise CommandError(f"{args[0]} failed: {details}")
+
+    return result
+
+
+def systemd_unit_name_for(mount_point: Path) -> str:
+    result = run_command(
+        ["systemd-escape", "--suffix=mount", "--path", str(mount_point)],
+        check=True,
+    )
+    unit_name = result.stdout.strip()
+    if not unit_name.endswith(".mount"):
+        raise CommandError("systemd-escape returned an invalid mount unit name.")
+    return unit_name
+
+
+def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int) -> ManagedMount:
+    manager_id = manager_id_for(share_path)
+    mount_point = MOUNT_ROOT / share_path.host / share_path.share
+    unit_name = systemd_unit_name_for(mount_point)
+    credential_path = CREDENTIALS_DIR / f"{manager_id}.cred"
+    metadata_path = METADATA_DIR / f"{manager_id}.json"
+    return ManagedMount(
+        manager_id=manager_id,
+        source=share_path.source,
+        host=share_path.host,
+        share=share_path.share,
+        mount_point=mount_point,
+        unit_name=unit_name,
+        credential_path=credential_path,
+        metadata_path=metadata_path,
+        creator_uid=creator_uid,
+        creator_gid=creator_gid,
+    )
+
+
+def mount_unit_text(record: ManagedMount) -> str:
+    return "\n".join(
+        [
+            "[Unit]",
+            f"Description=Mount SMB share {record.source}",
+            "Documentation=man:mount.cifs(8)",
+            "Wants=network-online.target",
+            "After=network-online.target",
+            "",
+            "[Mount]",
+            f"What={record.source}",
+            f"Where={record.mount_point}",
+            "Type=cifs",
+            f"Options={mount_options(record.credential_path, record.creator_uid, record.creator_gid)}",
+            f"TimeoutSec={MOUNT_TIMEOUT_SECONDS}s",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ]
+    )
+
+
+def metadata_for(record: ManagedMount) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "manager_id": record.manager_id,
+        "source": record.source,
+        "host": record.host,
+        "share": record.share,
+        "mount_point": str(record.mount_point),
+        "unit_name": record.unit_name,
+        "credential_path": str(record.credential_path),
+        "creator_uid": record.creator_uid,
+        "creator_gid": record.creator_gid,
+        "created_at": int(time.time()),
+    }
+
+
+def ensure_runtime_directories() -> None:
+    MANAGED_ROOT.mkdir(mode=0o755, exist_ok=True)
+    CREDENTIALS_DIR.mkdir(mode=0o700, exist_ok=True)
+    METADATA_DIR.mkdir(mode=0o755, exist_ok=True)
+    MOUNT_ROOT.mkdir(mode=0o755, exist_ok=True)
+    os.chmod(MANAGED_ROOT, 0o755)
+    os.chmod(CREDENTIALS_DIR, 0o700)
+    os.chmod(METADATA_DIR, 0o755)
+
+
+def write_credential_file(path: Path, username: str, password: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(f"username={username}\n")
+        handle.write(f"password={password}\n")
+    os.chmod(path, 0o600)
+
+
+def write_text_file(path: Path, text: str, mode: int) -> None:
+    path.write_text(text, encoding="utf-8")
+    os.chmod(path, mode)
+
+
+def write_metadata_file(record: ManagedMount) -> None:
+    text = json.dumps(metadata_for(record), indent=2, sort_keys=True) + "\n"
+    write_text_file(record.metadata_path, text, 0o644)
+
+
+def ensure_create_is_safe(record: ManagedMount) -> None:
+    unit_path = SYSTEMD_DIR / record.unit_name
+    if record.metadata_path.exists():
+        raise ValidationError(f"{record.source} is already managed by this app.")
+    if record.credential_path.exists():
+        raise ValidationError("A credential file already exists for this share.")
+    if unit_path.exists():
+        raise ValidationError(f"Systemd unit already exists: {unit_path}")
+    if record.mount_point.exists() and not record.mount_point.is_dir():
+        raise ValidationError(f"Mount path exists and is not a directory: {record.mount_point}")
+    if record.mount_point.exists() and any(record.mount_point.iterdir()):
+        raise ValidationError(f"Mount path is not empty: {record.mount_point}")
+
+
+def check_smb_host_reachable(share_raw: str) -> SharePath:
+    share_path = parse_share_path(share_raw)
+    try:
+        addresses = socket.getaddrinfo(
+            share_path.host,
+            SMB_PORT,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise CommandError(f"Could not resolve host {share_path.host}.") from exc
+
+    last_error = "connection failed"
+    for family, socktype, proto, _canonname, sockaddr in addresses:
+        with socket.socket(family, socktype, proto) as sock:
+            sock.settimeout(CONNECT_TIMEOUT_SECONDS)
+            try:
+                sock.connect(sockaddr)
+            except OSError as exc:
+                last_error = str(exc)
+                continue
+            return share_path
+
+    raise CommandError(f"Could not connect to {share_path.host} on SMB port {SMB_PORT}: {last_error}")
+
+
+def mount_options(
+    credential_path: Path,
+    creator_uid: int,
+    creator_gid: int,
+) -> str:
+    return ",".join(
+        [
+            f"credentials={credential_path}",
+            "iocharset=utf8",
+            "nofail",
+            "_netdev",
+            f"uid={creator_uid}",
+            f"gid={creator_gid}",
+        ]
+    )
+
+
+def create_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
+    share_path = parse_share_path(share_raw)
+    username, password = validate_credentials(username_raw, password_raw)
+    creator_uid, creator_gid = original_user_ids()
+    record = build_mount_record(share_path, creator_uid, creator_gid)
+
+    ensure_create_is_safe(record)
+    ensure_runtime_directories()
+
+    unit_path = SYSTEMD_DIR / record.unit_name
+    try:
+        record.mount_point.mkdir(mode=0o755, parents=True, exist_ok=True)
+        write_credential_file(record.credential_path, username, password)
+        write_text_file(unit_path, mount_unit_text(record), 0o644)
+        write_metadata_file(record)
+        run_command(["systemctl", "daemon-reload"])
+        run_command(["systemctl", "enable", "--now", record.unit_name])
+    except Exception:
+        rollback_failed_create(record)
+        raise
+
+
+def test_mount_share(share_raw: str, username_raw: str, password_raw: str) -> None:
+    share_path = parse_share_path(share_raw)
+    username, password = validate_credentials(username_raw, password_raw)
+    creator_uid, creator_gid = original_user_ids()
+
+    with tempfile.TemporaryDirectory(prefix="mount-manager-test-", dir="/tmp") as tmpdir:
+        tmp_path = Path(tmpdir)
+        credential_path = tmp_path / "credentials"
+        mount_point = tmp_path / "mount"
+        mount_point.mkdir(mode=0o700)
+        write_credential_file(credential_path, username, password)
+
+        try:
+            run_command(
+                [
+                    "mount",
+                    "-t",
+                    "cifs",
+                    share_path.source,
+                    str(mount_point),
+                    "-o",
+                    mount_options(credential_path, creator_uid, creator_gid),
+                ]
+            )
+            if not is_mounted(mount_point):
+                raise CommandError("Temporary mount did not become active.")
+        finally:
+            if is_mounted(mount_point):
+                run_command(["umount", str(mount_point)], check=False)
+
+
+def create_verified_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
+    test_mount_share(share_raw, username_raw, password_raw)
+    create_mount(share_raw, username_raw, password_raw)
+
+
+def remove_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def rmdir_if_empty(path: Path) -> None:
+    try:
+        path.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def is_mounted(mount_point: Path) -> bool:
+    result = run_command(
+        ["findmnt", "--json", "--mountpoint", str(mount_point)],
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    filesystems = payload.get("filesystems") or []
+    if not filesystems:
+        return False
+    fstype = filesystems[0].get("fstype")
+    return fstype in {"cifs", "smb3"}
+
+
+def rollback_failed_create(record: ManagedMount) -> None:
+    run_command(["systemctl", "disable", "--now", record.unit_name], check=False)
+    if is_mounted(record.mount_point):
+        run_command(["umount", str(record.mount_point)], check=False)
+    remove_if_exists(SYSTEMD_DIR / record.unit_name)
+    remove_if_exists(record.credential_path)
+    remove_if_exists(record.metadata_path)
+    rmdir_if_empty(record.mount_point)
+    rmdir_if_empty(record.mount_point.parent)
+    run_command(["systemctl", "daemon-reload"], check=False)
+    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+
+
+def delete_mount(record: ManagedMount) -> None:
+    run_command(["systemctl", "disable", "--now", record.unit_name], check=False)
+    if is_mounted(record.mount_point):
+        run_command(["umount", str(record.mount_point)])
+    if is_mounted(record.mount_point):
+        raise CommandError(f"Still mounted: {record.mount_point}")
+
+    remove_if_exists(SYSTEMD_DIR / record.unit_name)
+    remove_if_exists(record.credential_path)
+    remove_if_exists(record.metadata_path)
+    rmdir_if_empty(record.mount_point)
+    rmdir_if_empty(record.mount_point.parent)
+    run_command(["systemctl", "daemon-reload"])
+    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+
+
+def delete_mount_by_id(manager_id: str) -> None:
+    if not MANAGER_ID_RE.fullmatch(manager_id):
+        raise ValidationError("Invalid managed mount id.")
+
+    metadata_path = METADATA_DIR / f"{manager_id}.json"
+    record = load_record_from_metadata(metadata_path)
+    if record is None:
+        raise ValidationError("Managed mount was not found.")
+
+    delete_mount(record)
+
+
+def load_record_from_metadata(path: Path) -> ManagedMount | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    required = {
+        "manager_id",
+        "source",
+        "host",
+        "share",
+        "mount_point",
+        "unit_name",
+        "credential_path",
+        "creator_uid",
+        "creator_gid",
+    }
+    if not required.issubset(payload):
+        return None
+    if not str(payload["source"]).startswith("//"):
+        return None
+    if not str(payload["unit_name"]).endswith(".mount"):
+        return None
+
+    mount_point = Path(str(payload["mount_point"]))
+    active = is_mounted(mount_point)
+    status = "Mounted" if active else systemd_status(str(payload["unit_name"]))
+
+    return ManagedMount(
+        manager_id=str(payload["manager_id"]),
+        source=str(payload["source"]),
+        host=str(payload["host"]),
+        share=str(payload["share"]),
+        mount_point=mount_point,
+        unit_name=str(payload["unit_name"]),
+        credential_path=Path(str(payload["credential_path"])),
+        metadata_path=path,
+        creator_uid=int(payload["creator_uid"]),
+        creator_gid=int(payload["creator_gid"]),
+        active=active,
+        status=status,
+    )
+
+
+def systemd_status(unit_name: str) -> str:
+    result = run_command(["systemctl", "is-active", unit_name], check=False)
+    status = result.stdout.strip()
+    if status:
+        return status.capitalize()
+    return "Inactive"
+
+
+def load_managed_mounts() -> list[ManagedMount]:
+    if not METADATA_DIR.exists():
+        return []
+    records = []
+    try:
+        metadata_paths = sorted(METADATA_DIR.glob("*.json"))
+    except OSError:
+        return []
+    for path in metadata_paths:
+        record = load_record_from_metadata(path)
+        if record is not None:
+            records.append(record)
+    return records
+
+
+def detect_color_scheme(env: dict[str, str] | None = None) -> str:
+    if env is None:
+        env = os.environ
+
+    explicit = env.get(COLOR_SCHEME_ENV, "").strip().lower()
+    if explicit in {"dark", "light"}:
+        return explicit
+
+    gtk_theme = env.get("GTK_THEME", "").lower()
+    if "dark" in gtk_theme:
+        return "dark"
+    if "light" in gtk_theme:
+        return "light"
+
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return "light"
+
+    if result.returncode != 0:
+        return "light"
+
+    value = result.stdout.strip().strip("'\"").lower()
+    if value == "prefer-dark":
+        return "dark"
+    return "light"
+
+
+def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    pkexec = shutil.which("pkexec")
+    if pkexec is None:
+        raise CommandError("pkexec was not found. Install polkit to manage mounts.")
+
+    command = [
+        pkexec,
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--helper",
+        action,
+    ]
+    result = subprocess.run(
+        command,
+        check=False,
+        input=json.dumps(payload),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    try:
+        response = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        details = (result.stderr or result.stdout).strip()
+        if not details:
+            details = f"helper exited with code {result.returncode}"
+        raise CommandError(details) from exc
+
+    if result.returncode != 0 or not response.get("ok"):
+        message = str(response.get("error") or result.stderr or "Privilege operation failed.").strip()
+        raise CommandError(message)
+
+    return response
+
+
+def request_helper_verified_create(share: str, username: str, password: str) -> None:
+    parse_share_path(share)
+    validate_credentials(username, password)
+    run_privileged_helper(
+        "verify-create",
+        {
+            "share": share,
+            "username": username,
+            "password": password,
+        },
+    )
+
+
+def request_helper_delete(record: ManagedMount) -> None:
+    run_privileged_helper("delete", {"manager_id": record.manager_id})
+
+
+def write_helper_response(ok: bool, *, error: str | None = None) -> None:
+    payload: dict[str, Any] = {"ok": ok}
+    if error is not None:
+        payload["error"] = error
+    print(json.dumps(payload), flush=True)
+
+
+def read_helper_payload() -> dict[str, Any]:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValidationError("Helper received invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError("Helper payload must be a JSON object.")
+    return payload
+
+
+def run_helper_mode(action: str) -> int:
+    if os.geteuid() != 0:
+        write_helper_response(False, error="Helper must run as root.")
+        return 1
+
+    try:
+        payload = read_helper_payload()
+        if action == "verify-create":
+            create_verified_mount(
+                str(payload.get("share", "")),
+                str(payload.get("username", "")),
+                str(payload.get("password", "")),
+            )
+        elif action == "delete":
+            delete_mount_by_id(str(payload.get("manager_id", "")))
+        else:
+            raise ValidationError("Unknown helper action.")
+    except MountManagerError as exc:
+        write_helper_response(False, error=str(exc))
+        return 1
+    except Exception as exc:
+        write_helper_response(False, error=f"Unexpected helper error: {exc}")
+        return 1
+
+    write_helper_response(True)
+    return 0
+
+
+def import_gtk() -> tuple[Any, Any, Any, Any]:
+    import gi
+
+    gi.require_version("Gdk", "4.0")
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Pango", "1.0")
+    from gi.repository import Gdk, Gio, Gtk, Pango
+
+    return Gdk, Gio, Gtk, Pango
+
+
+def apply_theme(Gtk: Any, Gdk: Any) -> None:
+    settings = Gtk.Settings.get_default()
+    if settings is not None:
+        settings.set_property(
+            "gtk-application-prefer-dark-theme",
+            detect_color_scheme() == "dark",
+        )
+
+    display = Gdk.Display.get_default()
+    if display is None:
+        return
+
+    Gtk.Window.set_default_icon_name(APP_ICON_NAME)
+
+    provider = Gtk.CssProvider()
+    provider.load_from_data(APP_CSS.encode("utf-8"))
+    Gtk.StyleContext.add_provider_for_display(
+        display,
+        provider,
+        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+    )
+
+
+def run_gui() -> int:
+    Gdk, Gio, Gtk, Pango = import_gtk()
+    if not Gtk.init_check():
+        print(
+            "GTK could not connect to your graphical session. Run this from your "
+            "desktop session, not a plain TTY.",
+            file=sys.stderr,
+        )
+        return 1
+    if Gdk.Display.get_default() is None:
+        print(
+            "GTK did not provide a usable display. Run this from your desktop "
+            "session, not a plain TTY.",
+            file=sys.stderr,
+        )
+        return 1
+    apply_theme(Gtk, Gdk)
+
+    class AddShareWindow(Gtk.Window):
+        def __init__(self, parent: Gtk.Window, on_complete: Any) -> None:
+            super().__init__(title="Add SMB Share")
+            self.set_transient_for(parent)
+            self.set_modal(True)
+            self.set_default_size(560, -1)
+            self.set_resizable(False)
+            self.on_complete = on_complete
+            self.share_path: SharePath | None = None
+
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            root.set_margin_top(18)
+            root.set_margin_bottom(18)
+            root.set_margin_start(18)
+            root.set_margin_end(18)
+            self.set_child(root)
+
+            self.path_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            root.append(self.path_box)
+
+            path_label = Gtk.Label(label="Please add share path")
+            path_label.set_xalign(0)
+            self.path_box.append(path_label)
+
+            self.path_entry = Gtk.Entry()
+            self.path_entry.set_placeholder_text("//hostname/share")
+            self.path_entry.set_hexpand(True)
+            self.path_box.append(self.path_entry)
+
+            path_help = Gtk.Label(label="Example: //192.168.1.2/sharename or //hostname/sharename")
+            path_help.set_xalign(0)
+            path_help.add_css_class("dim-label")
+            self.path_box.append(path_help)
+
+            self.credentials_box = Gtk.Grid(column_spacing=12, row_spacing=10)
+            self.credentials_box.set_visible(False)
+            root.append(self.credentials_box)
+
+            verified_label = Gtk.Label(label="")
+            verified_label.set_xalign(0)
+            verified_label.add_css_class("success")
+            self.credentials_box.attach(verified_label, 0, 0, 2, 1)
+            self.verified_label = verified_label
+
+            user_label = Gtk.Label(label="Username")
+            user_label.set_xalign(0)
+            self.credentials_box.attach(user_label, 0, 1, 1, 1)
+
+            self.user_entry = Gtk.Entry()
+            self.user_entry.set_hexpand(True)
+            self.credentials_box.attach(self.user_entry, 1, 1, 1, 1)
+
+            password_label = Gtk.Label(label="Password")
+            password_label.set_xalign(0)
+            self.credentials_box.attach(password_label, 0, 2, 1, 1)
+
+            self.password_entry = Gtk.PasswordEntry()
+            self.password_entry.set_hexpand(True)
+            self.credentials_box.attach(self.password_entry, 1, 2, 1, 1)
+
+            self.status_label = Gtk.Label()
+            self.status_label.set_xalign(0)
+            self.status_label.set_wrap(True)
+            self.status_label.add_css_class("dim-label")
+            self.status_label.set_visible(False)
+            root.append(self.status_label)
+
+            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            buttons.set_halign(Gtk.Align.END)
+            root.append(buttons)
+
+            cancel_button = Gtk.Button(label="Cancel")
+            cancel_button.connect("clicked", lambda _button: self.close())
+            buttons.append(cancel_button)
+
+            self.back_button = Gtk.Button(label="Back")
+            self.back_button.set_visible(False)
+            self.back_button.connect("clicked", lambda _button: self.show_path_step())
+            buttons.append(self.back_button)
+
+            self.next_button = Gtk.Button(label="Check host")
+            self.next_button.add_css_class("suggested-action")
+            self.next_button.connect("clicked", lambda _button: self.on_next_clicked())
+            buttons.append(self.next_button)
+
+            self.path_entry.grab_focus()
+
+        def set_status(self, message: str, css_class: str) -> None:
+            self.status_label.remove_css_class("error")
+            self.status_label.remove_css_class("success")
+            self.status_label.add_css_class(css_class)
+            self.status_label.set_text(message)
+            self.status_label.set_visible(True)
+
+        def show_path_step(self) -> None:
+            self.share_path = None
+            self.path_entry.set_sensitive(True)
+            self.path_box.set_visible(True)
+            self.credentials_box.set_visible(False)
+            self.back_button.set_visible(False)
+            self.next_button.set_label("Check host")
+            self.status_label.set_visible(False)
+            self.path_entry.grab_focus()
+
+        def show_credentials_step(self, share_path: SharePath) -> None:
+            self.share_path = share_path
+            self.path_entry.set_sensitive(False)
+            self.path_box.set_visible(True)
+            self.credentials_box.set_visible(True)
+            self.verified_label.set_text("Host is reachable. Please enter credentials.")
+            self.back_button.set_visible(True)
+            self.next_button.set_label("Create")
+            self.status_label.set_visible(False)
+            self.user_entry.grab_focus()
+
+        def on_next_clicked(self) -> None:
+            if self.share_path is None:
+                self.check_host()
+            else:
+                self.test_and_create()
+
+        def check_host(self) -> None:
+            try:
+                share_path = check_smb_host_reachable(self.path_entry.get_text())
+            except MountManagerError as exc:
+                self.set_status(str(exc), "error")
+                return
+            except Exception as exc:
+                self.set_status(f"Unexpected error: {exc}", "error")
+                return
+
+            self.show_credentials_step(share_path)
+
+        def test_and_create(self) -> None:
+            if self.share_path is None:
+                self.set_status("Check the share path before entering credentials.", "error")
+                return
+
+            share = self.share_path.source
+            username = self.user_entry.get_text()
+            password = self.password_entry.get_text()
+
+            try:
+                validate_credentials(username, password)
+                self.set_status("Testing temporary mount, then creating startup mount...", "success")
+                request_helper_verified_create(share, username, password)
+            except MountManagerError as exc:
+                self.set_status(str(exc), "error")
+                return
+            except Exception as exc:
+                self.set_status(f"Unexpected error: {exc}", "error")
+                return
+
+            self.close()
+            self.on_complete(share)
+
+    class MessageWindow(Gtk.Window):
+        def __init__(self, parent: Gtk.Window, title: str, message: str) -> None:
+            super().__init__(title=title)
+            self.set_transient_for(parent)
+            self.set_modal(True)
+            self.set_default_size(420, -1)
+            self.set_resizable(False)
+
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            root.set_margin_top(18)
+            root.set_margin_bottom(18)
+            root.set_margin_start(18)
+            root.set_margin_end(18)
+            self.set_child(root)
+
+            heading = Gtk.Label(label=title)
+            heading.add_css_class("title-3")
+            heading.set_xalign(0)
+            root.append(heading)
+
+            label = Gtk.Label(label=message)
+            label.set_wrap(True)
+            label.set_xalign(0)
+            root.append(label)
+
+            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            buttons.set_halign(Gtk.Align.END)
+            root.append(buttons)
+
+            ok_button = Gtk.Button(label="OK")
+            ok_button.add_css_class("suggested-action")
+            ok_button.connect("clicked", lambda _button: self.close())
+            buttons.append(ok_button)
+
+    class DeleteMountWindow(Gtk.Window):
+        def __init__(self, parent: Gtk.Window, record: ManagedMount, on_complete: Any) -> None:
+            super().__init__(title="Delete SMB Mount")
+            self.set_transient_for(parent)
+            self.set_modal(True)
+            self.set_default_size(460, -1)
+            self.set_resizable(False)
+            self.record = record
+            self.on_complete = on_complete
+
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            root.set_margin_top(18)
+            root.set_margin_bottom(18)
+            root.set_margin_start(18)
+            root.set_margin_end(18)
+            self.set_child(root)
+
+            heading = Gtk.Label(label="Delete SMB Mount")
+            heading.add_css_class("title-3")
+            heading.set_xalign(0)
+            root.append(heading)
+
+            label = Gtk.Label(label=f"Delete {record.source} and remove its systemd unit?")
+            label.set_wrap(True)
+            label.set_xalign(0)
+            root.append(label)
+
+            self.error_label = Gtk.Label()
+            self.error_label.set_xalign(0)
+            self.error_label.set_wrap(True)
+            self.error_label.add_css_class("error")
+            self.error_label.set_visible(False)
+            root.append(self.error_label)
+
+            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            buttons.set_halign(Gtk.Align.END)
+            root.append(buttons)
+
+            cancel_button = Gtk.Button(label="Cancel")
+            cancel_button.connect("clicked", lambda _button: self.close())
+            buttons.append(cancel_button)
+
+            delete_button = Gtk.Button(label="Delete")
+            delete_button.add_css_class("destructive-action")
+            delete_button.connect("clicked", lambda _button: self.delete_share())
+            buttons.append(delete_button)
+
+        def show_error(self, message: str) -> None:
+            self.error_label.set_text(message)
+            self.error_label.set_visible(True)
+
+        def delete_share(self) -> None:
+            try:
+                request_helper_delete(self.record)
+            except MountManagerError as exc:
+                self.show_error(str(exc))
+                return
+            except Exception as exc:
+                self.show_error(f"Unexpected error: {exc}")
+                return
+
+            self.close()
+            self.on_complete()
+
+    class MainWindow(Gtk.ApplicationWindow):
+        def __init__(self, app: Gtk.Application) -> None:
+            super().__init__(application=app, title=APP_NAME)
+            self.set_default_size(760, 480)
+            self.set_icon_name(APP_ICON_NAME)
+
+            header = Gtk.HeaderBar()
+            title = Gtk.Label(label=APP_NAME)
+            title.add_css_class("heading")
+            header.set_title_widget(title)
+
+            refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+            refresh_button.set_tooltip_text("Refresh")
+            refresh_button.connect("clicked", lambda _button: self.refresh())
+            header.pack_start(refresh_button)
+
+            add_button = Gtk.Button(label="ADD SHARE")
+            add_button.set_tooltip_text("Add share")
+            add_button.add_css_class("suggested-action")
+            add_button.add_css_class("add-share-button")
+            add_button.connect("clicked", lambda _button: self.show_add_dialog())
+            header.pack_end(add_button)
+
+            self.set_titlebar(header)
+
+            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            root.add_css_class("mount-root")
+            root.set_margin_top(16)
+            root.set_margin_bottom(16)
+            root.set_margin_start(16)
+            root.set_margin_end(16)
+            self.set_child(root)
+
+            self.empty_label = Gtk.Label(label="No managed SMB mounts yet.")
+            self.empty_label.add_css_class("dim-label")
+            self.empty_label.set_margin_top(32)
+
+            self.list_box = Gtk.ListBox()
+            self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+            self.list_box.add_css_class("boxed-list")
+
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroller.set_child(self.list_box)
+            scroller.set_vexpand(True)
+            root.append(scroller)
+            root.append(self.empty_label)
+
+            self.refresh()
+
+        def refresh(self) -> None:
+            while True:
+                row = self.list_box.get_first_child()
+                if row is None:
+                    break
+                self.list_box.remove(row)
+
+            records = load_managed_mounts()
+            self.empty_label.set_visible(not records)
+            self.list_box.set_visible(bool(records))
+
+            for record in records:
+                self.list_box.append(self.row_for(record))
+
+        def row_for(self, record: ManagedMount) -> Gtk.ListBoxRow:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            box.set_margin_top(10)
+            box.set_margin_bottom(10)
+            box.set_margin_start(12)
+            box.set_margin_end(12)
+
+            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            text_box.set_hexpand(True)
+
+            source_label = Gtk.Label(label=record.source)
+            source_label.set_xalign(0)
+            source_label.add_css_class("heading")
+            source_label.set_ellipsize(Pango.EllipsizeMode.END)
+
+            detail = f"{record.mount_point}  -  {record.status}"
+            detail_label = Gtk.Label(label=detail)
+            detail_label.set_xalign(0)
+            detail_label.add_css_class("dim-label")
+            detail_label.set_ellipsize(Pango.EllipsizeMode.END)
+
+            text_box.append(source_label)
+            text_box.append(detail_label)
+
+            open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
+            open_button.set_tooltip_text("Open mount folder")
+            open_button.connect("clicked", lambda _button: self.open_mount_folder(record))
+
+            delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            delete_button.set_tooltip_text("Delete mount")
+            delete_button.add_css_class("destructive-action")
+            delete_button.connect("clicked", lambda _button: self.confirm_delete(record))
+
+            box.append(text_box)
+            box.append(open_button)
+            box.append(delete_button)
+            row.set_child(box)
+            return row
+
+        def show_add_dialog(self) -> None:
+            AddShareWindow(self, self.mount_created).present()
+
+        def mount_created(self, share: str) -> None:
+            self.refresh()
+            MessageWindow(self, "SMB Mount Created", f"{share} was successfully mounted.").present()
+
+        def open_mount_folder(self, record: ManagedMount) -> None:
+            if not record.mount_point.exists():
+                MessageWindow(self, "Open Folder Failed", f"Mount folder does not exist: {record.mount_point}").present()
+                return
+
+            try:
+                run_command(["xdg-open", str(record.mount_point)])
+            except MountManagerError as exc:
+                MessageWindow(self, "Open Folder Failed", f"Could not open {record.mount_point}: {exc}").present()
+
+        def confirm_delete(self, record: ManagedMount) -> None:
+            DeleteMountWindow(self, record, self.refresh).present()
+
+    class MountManagerApplication(Gtk.Application):
+        def __init__(self) -> None:
+            super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+        def do_activate(self) -> None:
+            window = self.props.active_window
+            if window is None:
+                window = MainWindow(self)
+            window.present()
+
+    app = MountManagerApplication()
+    return app.run(sys.argv)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=APP_NAME)
+    parser.add_argument(
+        "--helper",
+        choices=("delete", "verify-create"),
+        help=argparse.SUPPRESS,
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    args = parse_args(argv)
+    if args.helper:
+        return run_helper_mode(args.helper)
+
+    return run_gui()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

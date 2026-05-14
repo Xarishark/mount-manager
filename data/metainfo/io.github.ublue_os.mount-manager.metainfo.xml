@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ublue_os.mount-manager</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+
+  <name>SMB Mount Manager</name>
+  <summary>Create and manage SMB startup mounts</summary>
+  <developer id="io.github.ublue_os">
+    <name>ublue-os</name>
+  </developer>
+  <url type="homepage">https://github.com/ublue-os/mount-manager</url>
+
+  <description>
+    <p>
+      SMB Mount Manager helps users mount SMB shares through a simple GUI. It
+      checks the share, asks for credentials, and creates a startup mount.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.ublue_os.mount-manager.desktop</launchable>
+  <provides>
+    <binary>mount-manager</binary>
+  </provides>
+
+  <categories>
+    <category>GTK</category>
+    <category>System</category>
+    <category>Filesystem</category>
+  </categories>
+
+  <content_rating type="oars-1.1" />
+</component>

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=SMB Mount Manager
+Comment=Manages and creates SMB mounts
+Exec=mount-manager
+Icon=io.github.ublue_os.mount-manager
+Terminal=false
+Categories=GTK;System;Filesystem;
+StartupNotify=true
