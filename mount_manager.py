@@ -500,6 +500,20 @@ def delete_mount(record: ManagedMount) -> None:
     run_command(["systemctl", "reset-failed", record.unit_name], check=False)
 
 
+def set_mount_enabled(record: ManagedMount, enabled: bool) -> None:
+    if enabled:
+        run_command(["systemctl", "enable", "--now", record.unit_name])
+        return
+
+    run_command(["systemctl", "disable", "--now", record.unit_name])
+    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
+    if is_mounted(record.mount_point):
+        run_command(["umount", str(record.mount_point)])
+    if is_mounted(record.mount_point):
+        raise CommandError(f"Still mounted: {record.mount_point}")
+    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+
+
 def delete_mount_by_id(manager_id: str) -> None:
     if not MANAGER_ID_RE.fullmatch(manager_id):
         raise ValidationError("Invalid managed mount id.")
@@ -510,6 +524,18 @@ def delete_mount_by_id(manager_id: str) -> None:
         raise ValidationError("Managed mount was not found.")
 
     delete_mount(record)
+
+
+def set_mount_enabled_by_id(manager_id: str, enabled: bool) -> None:
+    if not MANAGER_ID_RE.fullmatch(manager_id):
+        raise ValidationError("Invalid managed mount id.")
+
+    metadata_path = METADATA_DIR / f"{manager_id}.json"
+    record = load_record_from_metadata(metadata_path)
+    if record is None:
+        raise ValidationError("Managed mount was not found.")
+
+    set_mount_enabled(record, enabled)
 
 
 def load_record_from_metadata(path: Path) -> ManagedMount | None:
@@ -667,6 +693,16 @@ def request_helper_delete(record: ManagedMount) -> None:
     run_privileged_helper("delete", {"manager_id": record.manager_id})
 
 
+def request_helper_set_enabled(record: ManagedMount, enabled: bool) -> None:
+    run_privileged_helper(
+        "set-enabled",
+        {
+            "manager_id": record.manager_id,
+            "enabled": enabled,
+        },
+    )
+
+
 def write_helper_response(ok: bool, *, error: str | None = None) -> None:
     payload: dict[str, Any] = {"ok": ok}
     if error is not None:
@@ -699,6 +735,11 @@ def run_helper_mode(action: str) -> int:
             )
         elif action == "delete":
             delete_mount_by_id(str(payload.get("manager_id", "")))
+        elif action == "set-enabled":
+            set_mount_enabled_by_id(
+                str(payload.get("manager_id", "")),
+                bool(payload.get("enabled", False)),
+            )
         else:
             raise ValidationError("Unknown helper action.")
     except MountManagerError as exc:
@@ -1093,6 +1134,12 @@ def run_gui() -> int:
             box.set_margin_start(12)
             box.set_margin_end(12)
 
+            mount_switch = Gtk.Switch()
+            mount_switch.set_valign(Gtk.Align.CENTER)
+            mount_switch.set_tooltip_text("Enable or disable this managed mount")
+            mount_switch.set_active(record.active)
+            mount_switch.connect("notify::active", lambda switch, _param: self.toggle_mount(record, switch))
+
             text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
             text_box.set_hexpand(True)
 
@@ -1119,6 +1166,7 @@ def run_gui() -> int:
             delete_button.add_css_class("destructive-action")
             delete_button.connect("clicked", lambda _button: self.confirm_delete(record))
 
+            box.append(mount_switch)
             box.append(text_box)
             box.append(open_button)
             box.append(delete_button)
@@ -1142,6 +1190,18 @@ def run_gui() -> int:
             except MountManagerError as exc:
                 MessageWindow(self, "Open Folder Failed", f"Could not open {record.mount_point}: {exc}").present()
 
+        def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
+            enabled = switch.get_active()
+            switch.set_sensitive(False)
+            try:
+                request_helper_set_enabled(record, enabled)
+            except MountManagerError as exc:
+                MessageWindow(self, "Mount Toggle Failed", str(exc)).present()
+            except Exception as exc:
+                MessageWindow(self, "Mount Toggle Failed", f"Unexpected error: {exc}").present()
+            finally:
+                self.refresh()
+
         def confirm_delete(self, record: ManagedMount) -> None:
             DeleteMountWindow(self, record, self.refresh).present()
 
@@ -1163,7 +1223,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--helper",
-        choices=("delete", "verify-create"),
+        choices=("delete", "set-enabled", "verify-create"),
         help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)
