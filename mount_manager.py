@@ -140,7 +140,7 @@ class ManagedMount:
     metadata_path: Path
     creator_uid: int
     creator_gid: int
-    encrypted_credential: bool = False
+    encrypted_credential: bool
     active: bool = False
     status: str = "Unknown"
 
@@ -252,7 +252,7 @@ def credential_paths_for(manager_id: str) -> tuple[Path, Path]:
     )
 
 
-def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int, encrypted_credential: bool = False) -> ManagedMount:
+def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int, encrypted_credential: bool) -> ManagedMount:
     manager_id = manager_id_for(share_path)
     mount_point = MOUNT_ROOT / share_path.host / share_path.share
     unit_name = systemd_unit_name_for(mount_point)
@@ -481,7 +481,7 @@ def mount_options(
     )
 
 
-def create_mount(share_raw: str, username_raw: str, password_raw: str, encrypted_credential: bool = False) -> None:
+def create_mount(share_raw: str, username_raw: str, password_raw: str, encrypted_credential: bool) -> None:
     share_path = parse_share_path(share_raw)
     username, password = validate_credentials(username_raw, password_raw)
     creator_uid, creator_gid = original_user_ids()
@@ -542,7 +542,7 @@ def test_mount_share(share_raw: str, username_raw: str, password_raw: str) -> No
                 run_command(["umount", str(mount_point)], check=False)
 
 
-def create_verified_mount(share_raw: str, username_raw: str, password_raw: str, encrypted_credential: bool = False) -> None:
+def create_verified_mount(share_raw: str, username_raw: str, password_raw: str, encrypted_credential: bool) -> None:
     test_mount_share(share_raw, username_raw, password_raw)
     create_mount(share_raw, username_raw, password_raw, encrypted_credential=encrypted_credential)
 
@@ -668,6 +668,7 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
         "mount_point",
         "unit_name",
         "credential_path",
+        "encrypted_credential",
         "creator_uid",
         "creator_gid",
     }
@@ -690,7 +691,7 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
         mount_point=mount_point,
         unit_name=str(payload["unit_name"]),
         credential_path=Path(str(payload["credential_path"])),
-        encrypted_credential=bool(payload.get("encrypted_credential", False)),
+        encrypted_credential=bool(payload["encrypted_credential"]),
         metadata_path=path,
         creator_uid=int(payload["creator_uid"]),
         creator_gid=int(payload["creator_gid"]),
@@ -844,7 +845,7 @@ def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any
     return response
 
 
-def request_helper_verified_create(share: str, username: str, password: str, encrypted_credential: bool = False) -> None:
+def request_helper_verified_create(share: str, username: str, password: str, encrypted_credential: bool) -> None:
     parse_share_path(share)
     validate_credentials(username, password)
     run_privileged_helper(
@@ -901,7 +902,7 @@ def run_helper_mode(action: str) -> int:
                 str(payload.get("share", "")),
                 str(payload.get("username", "")),
                 str(payload.get("password", "")),
-                encrypted_credential=bool(payload.get("encrypted_credential", False)),
+                encrypted_credential=bool(payload["encrypted_credential"]),
             )
         elif action == "delete":
             delete_mount_by_id(str(payload.get("manager_id", "")))
@@ -1038,17 +1039,19 @@ def run_gui() -> int:
             self.password_entry.connect("activate", lambda _entry: self.on_next_clicked())
             self.credentials_box.attach(self.password_entry, 1, 2, 1, 1)
 
-            self.encrypt_check = Gtk.CheckButton(label="Encrypt credentials with systemd-creds")
-            self.encrypt_check.set_tooltip_text(
-                "Credentials will be stored as an encrypted file that can only be decrypted by systemd when mounting.\n"
-                "Requires systemd 258 or newer."
-            )
-            if not encrypted_credentials_supported():
-                self.encrypt_check.set_sensitive(False)
-                self.encrypt_check.set_tooltip_text(
-                    "Encrypted credential files requires systemd 258 or newer."
+            self.encrypted_supported = encrypted_credentials_supported()
+            encryption_label = Gtk.Label()
+            encryption_label.set_xalign(0)
+            encryption_label.add_css_class("dim-label")
+            encryption_label.set_wrap(True)
+            if self.encrypted_supported:
+                encryption_label.set_text("Credentials will be encrypted with systemd-creds.")
+            else:
+                encryption_label.set_text(
+                    "Credentials will be stored as plaintext. "
+                    "Install systemd 258 or newer for encrypted credentials."
                 )
-            self.credentials_box.attach(self.encrypt_check, 0, 3, 2, 1)
+            self.credentials_box.attach(encryption_label, 0, 3, 2, 1)
 
             self.status_label = Gtk.Label()
             self.status_label.set_xalign(0)
@@ -1135,7 +1138,7 @@ def run_gui() -> int:
             try:
                 validate_credentials(username, password)
                 self.set_status("Verifying the mount, then creating the startup mount...", "success")
-                request_helper_verified_create(share, username, password, encrypted_credential=self.encrypt_check.get_active())
+                request_helper_verified_create(share, username, password, encrypted_credential=self.encrypted_supported)
             except MountManagerError as exc:
                 self.set_status(str(exc), "error")
                 return
