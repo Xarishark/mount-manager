@@ -9,7 +9,7 @@
   <developer id="io.github.xarishark">
     <name>Zacharias Xenakis</name>
   </developer>
-  <url type="homepage">https://github.com/Xarishark/mount-manager</url>
+  <url type="homepage">https://github.com/ublue-os/mount-manager</url>
 
   <description>
     <p>
@@ -28,6 +28,14 @@
     <category>System</category>
     <category>Filesystem</category>
   </categories>
+
+  <releases>
+    <release version="0.1.0" date="2026-05-15">
+      <description>
+        <p>Initial release.</p>
+      </description>
+    </release>
+  </releases>
 
   <content_rating type="oars-1.1" />
 </component>
