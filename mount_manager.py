@@ -438,6 +438,10 @@ def remove_if_exists(path: Path) -> None:
         pass
 
 
+def enabled_unit_symlink_path(unit_name: str) -> Path:
+    return SYSTEMD_DIR / "multi-user.target.wants" / unit_name
+
+
 def rmdir_if_empty(path: Path) -> None:
     try:
         path.rmdir()
@@ -467,6 +471,7 @@ def is_mounted(mount_point: Path) -> bool:
 
 def rollback_failed_create(record: ManagedMount) -> None:
     run_command(["systemctl", "disable", "--now", record.unit_name], check=False)
+    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
     if is_mounted(record.mount_point):
         run_command(["umount", str(record.mount_point)], check=False)
     remove_if_exists(SYSTEMD_DIR / record.unit_name)
@@ -480,6 +485,7 @@ def rollback_failed_create(record: ManagedMount) -> None:
 
 def delete_mount(record: ManagedMount) -> None:
     run_command(["systemctl", "disable", "--now", record.unit_name], check=False)
+    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
     if is_mounted(record.mount_point):
         run_command(["umount", str(record.mount_point)])
     if is_mounted(record.mount_point):
