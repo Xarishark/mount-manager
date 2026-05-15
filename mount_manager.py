@@ -46,6 +46,9 @@ SMB_PORT = 445
 CONNECT_TIMEOUT_SECONDS = 4.0
 MOUNT_TIMEOUT_SECONDS = 5
 
+# Used with systemd credentials, the filename and --name argument must match or decryption fails
+CREDENTIAL_NAME = "smbcreds"
+
 APP_CSS = """
 window {
   background: @theme_bg_color;
@@ -137,6 +140,7 @@ class ManagedMount:
     metadata_path: Path
     creator_uid: int
     creator_gid: int
+    encrypted_credential: bool = False
     active: bool = False
     status: str = "Unknown"
 
@@ -240,11 +244,20 @@ def systemd_unit_name_for(mount_point: Path) -> str:
     return unit_name
 
 
-def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int) -> ManagedMount:
+def credential_paths_for(manager_id: str) -> tuple[Path, Path]:
+    """Return plaintext_path, encrypted_path for the given manager_id"""
+    return (
+        CREDENTIALS_DIR / f"{manager_id}.cred",
+        CREDENTIALS_DIR / f"{manager_id}.cred.enc",
+    )
+
+
+def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int, encrypted_credential: bool = False) -> ManagedMount:
     manager_id = manager_id_for(share_path)
     mount_point = MOUNT_ROOT / share_path.host / share_path.share
     unit_name = systemd_unit_name_for(mount_point)
-    credential_path = CREDENTIALS_DIR / f"{manager_id}.cred"
+    plaintext_path, encrypted_path = credential_paths_for(manager_id)
+    credential_path = encrypted_path if encrypted_credential else plaintext_path
     metadata_path = METADATA_DIR / f"{manager_id}.json"
     return ManagedMount(
         manager_id=manager_id,
@@ -254,6 +267,7 @@ def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int
         mount_point=mount_point,
         unit_name=unit_name,
         credential_path=credential_path,
+        encrypted_credential=encrypted_credential,
         metadata_path=metadata_path,
         creator_uid=creator_uid,
         creator_gid=creator_gid,
@@ -261,6 +275,18 @@ def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int
 
 
 def mount_unit_text(record: ManagedMount) -> str:
+    credentials = f"%d/{CREDENTIAL_NAME}" if record.encrypted_credential else record.credential_path
+    mount_section = [
+        "[Mount]",
+        f"What={record.source}",
+        f"Where={record.mount_point}",
+        "Type=cifs",
+        f"Options={mount_options(credentials, record.creator_uid, record.creator_gid)}",
+        f"TimeoutSec={MOUNT_TIMEOUT_SECONDS}s",
+    ]
+    if record.encrypted_credential:
+        mount_section.append(f"LoadCredentialEncrypted={CREDENTIAL_NAME}:{record.credential_path}")
+
     return "\n".join(
         [
             "[Unit]",
@@ -269,12 +295,7 @@ def mount_unit_text(record: ManagedMount) -> str:
             "Wants=network-online.target",
             "After=network-online.target",
             "",
-            "[Mount]",
-            f"What={record.source}",
-            f"Where={record.mount_point}",
-            "Type=cifs",
-            f"Options={mount_options(record.credential_path, record.creator_uid, record.creator_gid)}",
-            f"TimeoutSec={MOUNT_TIMEOUT_SECONDS}s",
+            *mount_section,
             "",
             "[Install]",
             "WantedBy=multi-user.target",
@@ -285,7 +306,7 @@ def mount_unit_text(record: ManagedMount) -> str:
 
 def metadata_for(record: ManagedMount) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "manager_id": record.manager_id,
         "source": record.source,
         "host": record.host,
@@ -293,6 +314,7 @@ def metadata_for(record: ManagedMount) -> dict[str, Any]:
         "mount_point": str(record.mount_point),
         "unit_name": record.unit_name,
         "credential_path": str(record.credential_path),
+        "encrypted_credential": record.encrypted_credential,
         "creator_uid": record.creator_uid,
         "creator_gid": record.creator_gid,
         "created_at": int(time.time()),
@@ -317,6 +339,80 @@ def write_credential_file(path: Path, username: str, password: str) -> None:
     os.chmod(path, 0o600)
 
 
+def systemd_version() -> int | None:
+    """Return the major version number of systemd, or None if it cannot be determined."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "--version"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    split_line = first_line.split()
+    if len(split_line) >= 2 and split_line[0] == "systemd":
+        try:
+            return int(split_line[1])
+        except ValueError:
+            return None
+    return None
+
+
+def encrypted_credentials_supported() -> bool:
+    """Check if the system can use systemd-creds for mount units."""
+    if shutil.which("systemd-creds") is None:
+        return False
+    version = systemd_version()
+    return version is not None and version >= 258 # Minimum systemd version support for mount credentials is 258
+
+
+
+def write_encrypted_credential_file(path: Path, credential_name: str, username: str, password: str) -> None:
+    """Write an encrypted cifs credentials blob via systemd-creds.
+
+    The plaintext is piped on stdin and never touches disk. The resulting
+    file at *path* is the binary systemd-creds encrypted form, bound to
+    *credential_name* so that decryption succeeds only when the receiving
+    unit references the same name in LoadCredentialEncrypted=.
+    """
+
+    plaintext = f"username={username}\npassword={password}\n".encode("utf-8")
+
+    try:
+        result = subprocess.run(
+            [
+                "systemd-creds",
+                "encrypt",
+                f"--name={credential_name}",
+                "-",
+                str(path),
+            ],
+            input=plaintext,
+            check=False,
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        raise CommandError("systemd-creds was not found") from exc
+
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or b"").decode("utf-8", "replace").strip()
+        if not details:
+            details = f"exit code {result.returncode}"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise CommandError(f"systemd-creds encryption failed: {details}")
+
+    # systemd-creds creates the encrypted file with 0o600 permissions, but set it explicitly to be sure
+    os.chmod(path, 0o600)
+
+
 def write_text_file(path: Path, text: str, mode: int) -> None:
     path.write_text(text, encoding="utf-8")
     os.chmod(path, mode)
@@ -329,10 +425,12 @@ def write_metadata_file(record: ManagedMount) -> None:
 
 def ensure_create_is_safe(record: ManagedMount) -> None:
     unit_path = SYSTEMD_DIR / record.unit_name
+
     if record.metadata_path.exists():
         raise ValidationError(f"{record.source} is already managed by this app.")
-    if record.credential_path.exists():
-        raise ValidationError("A credential file already exists for this share.")
+    for kind, path in zip(("plaintext", "encrypted"), credential_paths_for(record.manager_id)):
+        if path.exists():
+            raise ValidationError(f"A {kind} credential file already exists for this share: {path}")
     if unit_path.exists():
         raise ValidationError(f"Systemd unit already exists: {unit_path}")
     if record.mount_point.exists() and not record.mount_point.is_dir():
@@ -367,13 +465,13 @@ def check_smb_host_reachable(share_raw: str) -> SharePath:
 
 
 def mount_options(
-    credential_path: Path,
+    credentials: Path | str,
     creator_uid: int,
     creator_gid: int,
 ) -> str:
     return ",".join(
         [
-            f"credentials={credential_path}",
+            f"credentials={credentials}",
             "iocharset=utf8",
             "nofail",
             "_netdev",
@@ -383,11 +481,16 @@ def mount_options(
     )
 
 
-def create_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
+def create_mount(share_raw: str, username_raw: str, password_raw: str, encrypted_credential: bool = False) -> None:
     share_path = parse_share_path(share_raw)
     username, password = validate_credentials(username_raw, password_raw)
     creator_uid, creator_gid = original_user_ids()
-    record = build_mount_record(share_path, creator_uid, creator_gid)
+    record = build_mount_record(
+        share_path,
+        creator_uid,
+        creator_gid,
+        encrypted_credential=encrypted_credential
+    )
 
     ensure_create_is_safe(record)
     ensure_runtime_directories()
@@ -395,7 +498,10 @@ def create_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
     unit_path = SYSTEMD_DIR / record.unit_name
     try:
         record.mount_point.mkdir(mode=0o755, parents=True, exist_ok=True)
-        write_credential_file(record.credential_path, username, password)
+        if record.encrypted_credential:
+            write_encrypted_credential_file(record.credential_path, CREDENTIAL_NAME, username, password)
+        else:
+            write_credential_file(record.credential_path, username, password)
         write_text_file(unit_path, mount_unit_text(record), 0o644)
         write_metadata_file(record)
         run_command(["systemctl", "daemon-reload"])
@@ -436,9 +542,9 @@ def test_mount_share(share_raw: str, username_raw: str, password_raw: str) -> No
                 run_command(["umount", str(mount_point)], check=False)
 
 
-def create_verified_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
+def create_verified_mount(share_raw: str, username_raw: str, password_raw: str, encrypted_credential: bool = False) -> None:
     test_mount_share(share_raw, username_raw, password_raw)
-    create_mount(share_raw, username_raw, password_raw)
+    create_mount(share_raw, username_raw, password_raw, encrypted_credential=encrypted_credential)
 
 
 def remove_if_exists(path: Path) -> None:
@@ -584,6 +690,7 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
         mount_point=mount_point,
         unit_name=str(payload["unit_name"]),
         credential_path=Path(str(payload["credential_path"])),
+        encrypted_credential=bool(payload.get("encrypted_credential", False)),
         metadata_path=path,
         creator_uid=int(payload["creator_uid"]),
         creator_gid=int(payload["creator_gid"]),
@@ -737,7 +844,7 @@ def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any
     return response
 
 
-def request_helper_verified_create(share: str, username: str, password: str) -> None:
+def request_helper_verified_create(share: str, username: str, password: str, encrypted_credential: bool = False) -> None:
     parse_share_path(share)
     validate_credentials(username, password)
     run_privileged_helper(
@@ -746,6 +853,7 @@ def request_helper_verified_create(share: str, username: str, password: str) -> 
             "share": share,
             "username": username,
             "password": password,
+            "encrypted_credential": encrypted_credential,
         },
     )
 
@@ -793,6 +901,7 @@ def run_helper_mode(action: str) -> int:
                 str(payload.get("share", "")),
                 str(payload.get("username", "")),
                 str(payload.get("password", "")),
+                encrypted_credential=bool(payload.get("encrypted_credential", False)),
             )
         elif action == "delete":
             delete_mount_by_id(str(payload.get("manager_id", "")))
@@ -929,6 +1038,18 @@ def run_gui() -> int:
             self.password_entry.connect("activate", lambda _entry: self.on_next_clicked())
             self.credentials_box.attach(self.password_entry, 1, 2, 1, 1)
 
+            self.encrypt_check = Gtk.CheckButton(label="Encrypt credentials with systemd-creds")
+            self.encrypt_check.set_tooltip_text(
+                "Credentials will be stored as an encrypted file that can only be decrypted by systemd when mounting.\n"
+                "Requires systemd 258 or newer."
+            )
+            if not encrypted_credentials_supported():
+                self.encrypt_check.set_sensitive(False)
+                self.encrypt_check.set_tooltip_text(
+                    "Encrypted credential files requires systemd 258 or newer."
+                )
+            self.credentials_box.attach(self.encrypt_check, 0, 3, 2, 1)
+
             self.status_label = Gtk.Label()
             self.status_label.set_xalign(0)
             self.status_label.set_wrap(True)
@@ -1014,7 +1135,7 @@ def run_gui() -> int:
             try:
                 validate_credentials(username, password)
                 self.set_status("Verifying the mount, then creating the startup mount...", "success")
-                request_helper_verified_create(share, username, password)
+                request_helper_verified_create(share, username, password, encrypted_credential=self.encrypt_check.get_active())
             except MountManagerError as exc:
                 self.set_status(str(exc), "error")
                 return
@@ -1217,6 +1338,8 @@ def run_gui() -> int:
             source_label.set_ellipsize(Pango.EllipsizeMode.END)
 
             detail = f"{mount.mount_point}  -  {mount.status}"
+            if mount.managed_record is not None and mount.managed_record.encrypted_credential:
+                detail += "  -  Encrypted"
             detail_label = Gtk.Label(label=detail)
             detail_label.set_xalign(0)
             detail_label.add_css_class("dim-label")

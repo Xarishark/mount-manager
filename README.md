@@ -15,6 +15,23 @@ Credentials and app metadata are stored under:
 /etc/mount-manager
 ```
 
+## Encrypted credentials
+
+When creating a share, you can optionally encrypt the credentials with
+`systemd-creds`. The plaintext password never touches disk; the encrypted blob
+is decrypted by systemd at unit start and exposed to `mount.cifs` via
+`LoadCredentialEncrypted=`. The blob is bound to the host, so it cannot be
+decrypted on a different machine.
+
+Requires systemd 258 or newer. The option is disabled in the dialog when
+unavailable.
+
+Encrypted credentials live alongside plaintext ones in
+`/etc/mount-manager/credentials/`, distinguished by suffix:
+
+- `<id>.cred` — plaintext
+- `<id>.cred.enc` — `systemd-creds` encrypted blob
+
 ## Test as an installed app on Bazzite
 
 From the repository root, enable a transient `/usr` overlay:
