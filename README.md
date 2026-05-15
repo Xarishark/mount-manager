@@ -15,6 +15,19 @@ Credentials and app metadata are stored under:
 /etc/mount-manager
 ```
 
+## Requirements
+
+systemd 258 or newer with `systemd-creds` available. The app refuses to start
+on older systems.
+
+Credentials are always stored encrypted via `systemd-creds` and decrypted by
+systemd at unit start, exposed to `mount.cifs` through `LoadCredentialEncrypted=`.
+The plaintext password never touches disk, and the encrypted blob is bound to
+the host so it cannot be decrypted on a different machine.
+
+Encrypted credential files live in `/etc/mount-manager/credentials/` as
+`<id>.cred.enc`.
+
 ## Test as an installed app on Bazzite
 
 From the repository root, enable a transient `/usr` overlay:

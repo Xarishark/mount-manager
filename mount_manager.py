@@ -49,6 +49,12 @@ SMB_PORT = 445
 CONNECT_TIMEOUT_SECONDS = 4.0
 MOUNT_TIMEOUT_SECONDS = 5
 
+# Used with systemd credentials, the filename and --name argument must match or decryption fails
+CREDENTIAL_NAME = "smbcreds"
+
+# Mount-unit credentials (LoadCredentialEncrypted=) require this systemd version.
+MIN_SYSTEMD_VERSION = 258
+
 APP_CSS = """
 window {
   background: @theme_bg_color;
@@ -253,11 +259,16 @@ def systemd_unit_name_for(mount_point: Path) -> str:
     return unit_name
 
 
+def credential_path_for(manager_id: str) -> Path:
+    """Return the on-disk path of the encrypted credential blob for *manager_id*."""
+    return CREDENTIALS_DIR / f"{manager_id}.cred.enc"
+
+
 def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int) -> ManagedMount:
     manager_id = manager_id_for(share_path)
     mount_point = MOUNT_ROOT / share_path.host / share_path.share
     unit_name = systemd_unit_name_for(mount_point)
-    credential_path = CREDENTIALS_DIR / f"{manager_id}.cred"
+    credential_path = credential_path_for(manager_id)
     metadata_path = METADATA_DIR / f"{manager_id}.json"
     return ManagedMount(
         manager_id=manager_id,
@@ -286,8 +297,9 @@ def mount_unit_text(record: ManagedMount) -> str:
             f"What={record.source}",
             f"Where={record.mount_point}",
             "Type=cifs",
-            f"Options={mount_options(record.credential_path, record.creator_uid, record.creator_gid)}",
+            f"Options={mount_options(f'%d/{CREDENTIAL_NAME}', record.creator_uid, record.creator_gid)}",
             f"TimeoutSec={MOUNT_TIMEOUT_SECONDS}s",
+            f"LoadCredentialEncrypted={CREDENTIAL_NAME}:{record.credential_path}",
             "",
             "[Install]",
             "WantedBy=multi-user.target",
@@ -298,7 +310,7 @@ def mount_unit_text(record: ManagedMount) -> str:
 
 def metadata_for(record: ManagedMount) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "manager_id": record.manager_id,
         "source": record.source,
         "host": record.host,
@@ -330,6 +342,94 @@ def write_credential_file(path: Path, username: str, password: str) -> None:
     os.chmod(path, 0o600)
 
 
+def systemd_version() -> int | None:
+    """Return the major version number of systemd, or None if it cannot be determined."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "--version"],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    first_line = result.stdout.splitlines()[0] if result.stdout else ""
+    split_line = first_line.split()
+    if len(split_line) >= 2 and split_line[0] == "systemd":
+        try:
+            return int(split_line[1])
+        except ValueError:
+            return None
+    return None
+
+
+def encrypted_credentials_supported() -> bool:
+    """Check if the system can use systemd-creds for mount units."""
+    if shutil.which("systemd-creds") is None:
+        return False
+    version = systemd_version()
+    return version is not None and version >= MIN_SYSTEMD_VERSION
+
+
+def require_systemd_support() -> None:
+    """Exit if the system cannot supply credentials to mount units via systemd-creds."""
+    if encrypted_credentials_supported():
+        return
+    version = systemd_version()
+    found = f"systemd {version}" if version is not None else "systemd version unknown"
+    print(
+        f"{APP_NAME} requires systemd {MIN_SYSTEMD_VERSION} or newer with systemd-creds available "
+        f"(found {found}).",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+
+def write_encrypted_credential_file(path: Path, credential_name: str, username: str, password: str) -> None:
+    """Write an encrypted cifs credentials blob via systemd-creds.
+
+    The plaintext is piped on stdin and never touches disk. The resulting
+    file at *path* is the binary systemd-creds encrypted form, bound to
+    *credential_name* so that decryption succeeds only when the receiving
+    unit references the same name in LoadCredentialEncrypted=.
+    """
+
+    plaintext = f"username={username}\npassword={password}\n".encode("utf-8")
+
+    try:
+        result = subprocess.run(
+            [
+                "systemd-creds",
+                "encrypt",
+                f"--name={credential_name}",
+                "-",
+                str(path),
+            ],
+            input=plaintext,
+            check=False,
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        raise CommandError("systemd-creds was not found") from exc
+
+    if result.returncode != 0:
+        details = (result.stderr or result.stdout or b"").decode("utf-8", "replace").strip()
+        if not details:
+            details = f"exit code {result.returncode}"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise CommandError(f"systemd-creds encryption failed: {details}")
+
+    # systemd-creds creates the encrypted file with 0o600 permissions, but set it explicitly to be sure
+    os.chmod(path, 0o600)
+
+
 def write_text_file(path: Path, text: str, mode: int) -> None:
     path.write_text(text, encoding="utf-8")
     os.chmod(path, mode)
@@ -342,10 +442,11 @@ def write_metadata_file(record: ManagedMount) -> None:
 
 def ensure_create_is_safe(record: ManagedMount) -> None:
     unit_path = SYSTEMD_DIR / record.unit_name
+
     if record.metadata_path.exists():
         raise ValidationError(f"{record.source} is already managed by this app.")
     if record.credential_path.exists():
-        raise ValidationError("A credential file already exists for this share.")
+        raise ValidationError(f"A credential file already exists for this share: {record.credential_path}")
     if unit_path.exists():
         raise ValidationError(f"Systemd unit already exists: {unit_path}")
     if record.mount_point.exists() and not record.mount_point.is_dir():
@@ -380,13 +481,13 @@ def check_smb_host_reachable(share_raw: str) -> SharePath:
 
 
 def mount_options(
-    credential_path: Path,
+    credentials: Path | str,
     creator_uid: int,
     creator_gid: int,
 ) -> str:
     return ",".join(
         [
-            f"credentials={credential_path}",
+            f"credentials={credentials}",
             "iocharset=utf8",
             "nofail",
             "_netdev",
@@ -408,7 +509,7 @@ def create_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
     unit_path = SYSTEMD_DIR / record.unit_name
     try:
         record.mount_point.mkdir(mode=0o755, parents=True, exist_ok=True)
-        write_credential_file(record.credential_path, username, password)
+        write_encrypted_credential_file(record.credential_path, CREDENTIAL_NAME, username, password)
         write_text_file(unit_path, mount_unit_text(record), 0o644)
         write_metadata_file(record)
         run_command(["systemctl", "daemon-reload"])
@@ -1352,6 +1453,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     args = parse_args(argv)
+    require_systemd_support()
     if args.helper:
         return run_helper_mode(args.helper)
 
