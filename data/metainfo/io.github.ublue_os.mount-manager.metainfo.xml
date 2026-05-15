@@ -6,10 +6,10 @@
 
   <name>SMB Mount Manager</name>
   <summary>Create and manage SMB startup mounts</summary>
-  <developer id="io.github.ublue_os">
-    <name>ublue-os</name>
+  <developer id="io.github.xarishark">
+    <name>Zacharias Xenakis</name>
   </developer>
-  <url type="homepage">https://github.com/ublue-os/mount-manager</url>
+  <url type="homepage">https://github.com/Xarishark/mount-manager</url>
 
   <description>
     <p>

@@ -30,6 +30,9 @@ from typing import Any
 
 APP_NAME = "SMB Mount Manager"
 APP_ID = "io.github.ublue_os.mount-manager"
+APP_CREATOR = "Zacharias Xenakis (Xarishark)"
+APP_DEVELOPERS = [APP_CREATOR]
+APP_WEBSITE = "https://github.com/Xarishark/mount-manager"
 COLOR_SCHEME_ENV = "MOUNT_MANAGER_COLOR_SCHEME"
 APP_ICON_NAME = APP_ID
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -92,8 +95,18 @@ headerbar {
   color: #26a269;
 }
 
+button.headerbar-control,
+menubutton.headerbar-control > button {
+  min-height: 34px;
+  min-width: 34px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
 button.add-share-button {
   font-weight: 700;
+  padding-left: 12px;
+  padding-right: 12px;
 }
 """
 
@@ -1260,15 +1273,31 @@ def run_gui() -> int:
 
             refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
             refresh_button.set_tooltip_text("Refresh")
+            refresh_button.add_css_class("headerbar-control")
             refresh_button.connect("clicked", lambda _button: self.refresh())
-            header.pack_start(refresh_button)
+
+            about_action = Gio.SimpleAction.new("about", None)
+            about_action.connect("activate", lambda _action, _param: self.show_about_dialog())
+            self.add_action(about_action)
+
+            menu = Gio.Menu()
+            menu.append(f"About {APP_NAME}", "win.about")
+
+            menu_button = Gtk.MenuButton()
+            menu_button.set_icon_name("open-menu-symbolic")
+            menu_button.set_menu_model(menu)
+            menu_button.set_tooltip_text("Main menu")
+            menu_button.add_css_class("headerbar-control")
 
             add_button = Gtk.Button(label="ADD SHARE")
             add_button.set_tooltip_text("Add share")
             add_button.add_css_class("suggested-action")
+            add_button.add_css_class("headerbar-control")
             add_button.add_css_class("add-share-button")
             add_button.connect("clicked", lambda _button: self.show_add_dialog())
-            header.pack_end(add_button)
+            header.pack_start(add_button)
+            header.pack_end(menu_button)
+            header.pack_end(refresh_button)
 
             self.set_titlebar(header)
 
@@ -1377,6 +1406,20 @@ def run_gui() -> int:
 
         def show_add_dialog(self) -> None:
             AddShareWindow(self, self.mount_created).present()
+
+        def show_about_dialog(self) -> None:
+            dialog = Gtk.AboutDialog()
+            dialog.set_transient_for(self)
+            dialog.set_modal(True)
+            dialog.set_program_name(APP_NAME)
+            dialog.set_logo_icon_name(APP_ICON_NAME)
+            dialog.set_comments("Create and manage SMB startup mounts.")
+            dialog.set_authors(APP_DEVELOPERS)
+            dialog.add_credit_section("Developed by", APP_DEVELOPERS)
+            dialog.set_website(APP_WEBSITE)
+            dialog.set_website_label("Project homepage")
+            dialog.set_license_type(Gtk.License.GPL_3_0_ONLY)
+            dialog.present()
 
         def mount_created(self, share: str) -> None:
             self.refresh()
