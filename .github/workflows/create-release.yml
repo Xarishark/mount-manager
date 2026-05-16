@@ -25,7 +25,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          new_version=$(sed -n -E 's/^[[:space:]]*<release[^>]*version="?([^"]+)"?.*/\1/p; s/^[[:space:]]*<component[^>]*version="?([^"]+)"?.*/\1/p' data/metainfo/io.github.ublue_os.mount-manager.metainfo.xml | head -n1)
+          new_version=$(sed -n -E 's/^[[:space:]]*<release[^>]*version="?([^"]+)"?.*/\1/p; s/^[[:space:]]*<component[^>]*version="?([^"]+)"?.*/\1/p' data/metainfo/io.github.xarishark.mount-manager.metainfo.xml | head -n1)
 
           if [ -z "$new_version" ]; then
             echo "No version found in manifest"
