@@ -1,0 +1,62 @@
+diff --git a/mount-manager b/mount-manager
+--- a/mount-manager
++++ b/mount-manager
+@@ -1019,18 +1019,51 @@
+     return "light"
+ 
+ 
++def appimage_helper_path(env: dict[str, str] | None = None, source_path: Path | None = None) -> str | None:
++    """Return the original AppImage path when running from an AppImage mount."""
++    if env is None:
++        env = os.environ
++    if source_path is None:
++        source_path = Path(__file__).resolve()
++
++    appimage = env.get("APPIMAGE", "").strip()
++    appdir = env.get("APPDIR", "").strip()
++    if not appimage or not appdir:
++        return None
++
++    try:
++        source_path.relative_to(Path(appdir).resolve())
++    except ValueError:
++        return None
++
++    return appimage
++
++
++def privileged_helper_command(pkexec: str, action: str) -> list[str]:
++    appimage = appimage_helper_path()
++    if appimage is not None:
++        return [
++            pkexec,
++            appimage,
++            "--helper",
++            action,
++        ]
++
++    return [
++        pkexec,
++        sys.executable,
++        str(Path(__file__).resolve()),
++        "--helper",
++        action,
++    ]
++
++
+ def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+     pkexec = shutil.which("pkexec")
+     if pkexec is None:
+         raise CommandError("pkexec was not found. Install polkit to manage mounts.")
+ 
+-    command = [
+-        pkexec,
+-        sys.executable,
+-        str(Path(__file__).resolve()),
+-        "--helper",
+-        action,
+-    ]
++    command = privileged_helper_command(pkexec, action)
+     result = subprocess.run(
+         command,
+         check=False,

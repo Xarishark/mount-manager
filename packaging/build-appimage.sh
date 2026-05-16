@@ -88,6 +88,14 @@ mkdir -p "$appdir/usr/share/metainfo"
 mkdir -p "$dist_dir"
 
 install -D -m 0755 "$repo_root/mount_manager.py" "$appdir/usr/bin/mount-manager"
+if ! command -v git >/dev/null 2>&1; then
+  echo "git is required to apply the AppImage helper workaround." >&2
+  exit 1
+fi
+(
+  cd "$appdir/usr/bin"
+  GIT_DIR= GIT_WORK_TREE=. git apply --no-index --quiet "$repo_root/packaging/appimage-helper.patch"
+)
 install -D -m 0644 "$repo_root/data/icons/hicolor/scalable/apps/$APP_ID.svg" \
   "$appdir/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 install -D -m 0644 "$repo_root/data/metainfo/$APP_ID.metainfo.xml" \
@@ -108,6 +116,7 @@ cat >"$appdir/AppRun" <<'EOF'
 set -euo pipefail
 
 appdir="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+export APPDIR="${APPDIR:-$appdir}"
 export PATH="$appdir/usr/bin:$PATH"
 
 default_xdg_data_dirs="/usr/local/share:/usr/share"
