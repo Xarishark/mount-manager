@@ -34,10 +34,6 @@ APP_DEVELOPERS = [APP_CREATOR]
 APP_WEBSITE = "https://github.com/Xarishark/mount-manager"
 COLOR_SCHEME_ENV = "MOUNT_MANAGER_COLOR_SCHEME"
 APP_ICON_NAME = APP_ID
-PROJECT_ROOT = Path(__file__).resolve().parent
-DESKTOP_FILE_PATH = PROJECT_ROOT / "data" / "applications" / f"{APP_ID}.desktop"
-ICON_FILE_PATH = PROJECT_ROOT / "data" / "icons" / "hicolor" / "scalable" / "apps" / f"{APP_ID}.svg"
-METAINFO_FILE_PATH = PROJECT_ROOT / "data" / "metainfo" / f"{APP_ID}.metainfo.xml"
 
 MANAGED_ROOT = Path("/etc/mount-manager")
 CREDENTIALS_DIR = MANAGED_ROOT / "credentials"
@@ -110,6 +106,19 @@ button.add-share-button {
   padding-left: 12px;
   padding-right: 12px;
 }
+
+button.upgrade-action {
+  background: #26a269;
+  color: white;
+}
+
+button.upgrade-action:hover {
+  background: #2ec27e;
+}
+
+button.upgrade-action:active {
+  background: #1a7f52;
+}
 """
 
 HOST_RE = re.compile(
@@ -151,11 +160,14 @@ class ManagedMount:
     share: str
     mount_point: Path
     unit_name: str
+    automount_unit_name: str
     credential_path: Path
     metadata_path: Path
     creator_uid: int
     creator_gid: int
+    mounted: bool = False
     active: bool = False
+    needs_upgrade: bool = False
     status: str = "Unknown"
 
 
@@ -165,6 +177,8 @@ class DisplayedMount:
     mount_point: Path
     status: str
     active: bool
+    openable: bool
+    needs_upgrade: bool
     managed: bool
     managed_record: ManagedMount | None = None
 
@@ -226,7 +240,12 @@ def manager_id_for(share_path: SharePath) -> str:
     return digest[:16]
 
 
-def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_command(
+    args: list[str],
+    *,
+    check: bool = True,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         result = subprocess.run(
             args,
@@ -234,9 +253,12 @@ def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedP
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         raise CommandError(f"Required command not found: {args[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise CommandError(f"{args[0]} timed out.") from exc
 
     if check and result.returncode != 0:
         details = (result.stderr or result.stdout).strip()
@@ -247,14 +269,14 @@ def run_command(args: list[str], *, check: bool = True) -> subprocess.CompletedP
     return result
 
 
-def systemd_unit_name_for(mount_point: Path) -> str:
+def systemd_unit_name_for(mount_point: Path, suffix: str) -> str:
     result = run_command(
-        ["systemd-escape", "--suffix=mount", "--path", str(mount_point)],
+        ["systemd-escape", f"--suffix={suffix}", "--path", str(mount_point)],
         check=True,
     )
     unit_name = result.stdout.strip()
-    if not unit_name.endswith(".mount"):
-        raise CommandError("systemd-escape returned an invalid mount unit name.")
+    if not unit_name.endswith(f".{suffix}"):
+        raise CommandError(f"systemd-escape returned an invalid {suffix} unit name.")
     return unit_name
 
 
@@ -266,7 +288,8 @@ def credential_path_for(manager_id: str) -> Path:
 def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int) -> ManagedMount:
     manager_id = manager_id_for(share_path)
     mount_point = MOUNT_ROOT / share_path.host / share_path.share
-    unit_name = systemd_unit_name_for(mount_point)
+    unit_name = systemd_unit_name_for(mount_point, "mount")
+    automount_unit_name = systemd_unit_name_for(mount_point, "automount")
     credential_path = credential_path_for(manager_id)
     metadata_path = METADATA_DIR / f"{manager_id}.json"
     return ManagedMount(
@@ -276,6 +299,7 @@ def build_mount_record(share_path: SharePath, creator_uid: int, creator_gid: int
         share=share_path.share,
         mount_point=mount_point,
         unit_name=unit_name,
+        automount_unit_name=automount_unit_name,
         credential_path=credential_path,
         metadata_path=metadata_path,
         creator_uid=creator_uid,
@@ -300,6 +324,20 @@ def mount_unit_text(record: ManagedMount) -> str:
             f"TimeoutSec={MOUNT_TIMEOUT_SECONDS}s",
             f"LoadCredentialEncrypted={CREDENTIAL_NAME}:{record.credential_path}",
             "",
+        ]
+    )
+
+
+def automount_unit_text(record: ManagedMount) -> str:
+    return "\n".join(
+        [
+            "[Unit]",
+            f"Description=Automount SMB share {record.source}",
+            "Documentation=man:systemd.automount(5)",
+            "",
+            "[Automount]",
+            f"Where={record.mount_point}",
+            "",
             "[Install]",
             "WantedBy=multi-user.target",
             "",
@@ -309,13 +347,14 @@ def mount_unit_text(record: ManagedMount) -> str:
 
 def metadata_for(record: ManagedMount) -> dict[str, Any]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "manager_id": record.manager_id,
         "source": record.source,
         "host": record.host,
         "share": record.share,
         "mount_point": str(record.mount_point),
         "unit_name": record.unit_name,
+        "automount_unit_name": record.automount_unit_name,
         "credential_path": str(record.credential_path),
         "creator_uid": record.creator_uid,
         "creator_gid": record.creator_gid,
@@ -430,15 +469,33 @@ def write_metadata_file(record: ManagedMount) -> None:
     write_text_file(record.metadata_path, text, 0o644)
 
 
-def ensure_create_is_safe(record: ManagedMount) -> None:
-    unit_path = SYSTEMD_DIR / record.unit_name
+def mount_unit_path(record: ManagedMount) -> Path:
+    return SYSTEMD_DIR / record.unit_name
 
+
+def automount_unit_path(record: ManagedMount) -> Path:
+    return SYSTEMD_DIR / record.automount_unit_name
+
+
+def write_unit_files(record: ManagedMount) -> None:
+    write_text_file(mount_unit_path(record), mount_unit_text(record), 0o644)
+    write_text_file(automount_unit_path(record), automount_unit_text(record), 0o644)
+
+
+def ensure_mount_point(record: ManagedMount) -> None:
+    if record.mount_point.exists() and not record.mount_point.is_dir():
+        raise ValidationError(f"Mount path exists and is not a directory: {record.mount_point}")
+    record.mount_point.mkdir(mode=0o755, parents=True, exist_ok=True)
+
+
+def ensure_create_is_safe(record: ManagedMount) -> None:
     if record.metadata_path.exists():
         raise ValidationError(f"{record.source} is already managed by this app.")
     if record.credential_path.exists():
         raise ValidationError(f"A credential file already exists for this share: {record.credential_path}")
-    if unit_path.exists():
-        raise ValidationError(f"Systemd unit already exists: {unit_path}")
+    for unit_path in (mount_unit_path(record), automount_unit_path(record)):
+        if unit_path.exists():
+            raise ValidationError(f"Systemd unit already exists: {unit_path}")
     if record.mount_point.exists() and not record.mount_point.is_dir():
         raise ValidationError(f"Mount path exists and is not a directory: {record.mount_point}")
     if record.mount_point.exists() and any(record.mount_point.iterdir()):
@@ -494,17 +551,13 @@ def create_mount(share_raw: str, username_raw: str, password_raw: str) -> None:
     ensure_create_is_safe(record)
     ensure_runtime_directories()
 
-    unit_path = SYSTEMD_DIR / record.unit_name
     try:
-        record.mount_point.mkdir(mode=0o755, parents=True, exist_ok=True)
+        ensure_mount_point(record)
         write_encrypted_credential_file(record.credential_path, CREDENTIAL_NAME, username, password)
-        write_text_file(unit_path, mount_unit_text(record), 0o644)
+        write_unit_files(record)
         write_metadata_file(record)
         run_command(["systemctl", "daemon-reload"])
-        try:
-            run_command(["systemctl", "enable", "--now", record.unit_name])
-        except CommandError as exc:
-            raise CommandError("Could not mount the share. Check the share path, username, and password.") from exc
+        enable_and_trigger_automount(record)
     except Exception:
         rollback_failed_create(record)
         raise
@@ -521,6 +574,11 @@ def enabled_unit_symlink_path(unit_name: str) -> Path:
     return SYSTEMD_DIR / "multi-user.target.wants" / unit_name
 
 
+def remove_unit_symlinks(record: ManagedMount) -> None:
+    remove_if_exists(enabled_unit_symlink_path(record.automount_unit_name))
+    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
+
+
 def rmdir_if_empty(path: Path) -> None:
     try:
         path.rmdir()
@@ -530,85 +588,212 @@ def rmdir_if_empty(path: Path) -> None:
         pass
 
 
+def iter_findmnt_filesystems(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    filesystems = []
+    pending = list(payload.get("filesystems") or [])
+    while pending:
+        filesystem = pending.pop(0)
+        if isinstance(filesystem, dict):
+            filesystems.append(filesystem)
+            children = filesystem.get("children") or []
+            if isinstance(children, list):
+                pending.extend(children)
+    return filesystems
+
+
 def is_mounted(mount_point: Path) -> bool:
-    result = run_command(
-        ["findmnt", "--json", "--mountpoint", str(mount_point)],
-        check=False,
-    )
+    result = run_command(["findmnt", "--json", "--types", "cifs,smb3"], check=False)
     if result.returncode != 0:
         return False
     try:
         payload = json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
         return False
-    filesystems = payload.get("filesystems") or []
-    if not filesystems:
-        return False
-    fstype = filesystems[0].get("fstype")
-    return fstype in {"cifs", "smb3"}
+
+    expected = str(mount_point.resolve(strict=False))
+    for filesystem in iter_findmnt_filesystems(payload):
+        target = str(filesystem.get("target") or "")
+        if target and str(Path(target).resolve(strict=False)) == expected:
+            return True
+    return False
+
+
+def stop_and_unmount(record: ManagedMount, *, check: bool) -> None:
+    run_command(["systemctl", "stop", record.unit_name], check=False)
+    if not is_mounted(record.mount_point):
+        return
+
+    if not check:
+        run_command(["umount", str(record.mount_point)], check=False)
+        return
+
+    try:
+        run_command(["umount", str(record.mount_point)])
+    except CommandError as exc:
+        raise CommandError(
+            f"Could not unmount {record.mount_point}. Close any files or folders using it, then try again."
+        ) from exc
+
+    if is_mounted(record.mount_point):
+        raise CommandError(
+            f"Could not unmount {record.mount_point}. Close any files or folders using it, then try again."
+        )
+
+
+def disable_managed_units(record: ManagedMount) -> None:
+    run_command(["systemctl", "disable", record.automount_unit_name], check=False)
+    run_command(["systemctl", "disable", record.unit_name], check=False)
+    remove_unit_symlinks(record)
+    run_command(["systemctl", "stop", record.automount_unit_name], check=False)
+    run_command(["systemctl", "stop", record.unit_name], check=False)
+
+
+def reset_failed_units(record: ManagedMount) -> None:
+    run_command(["systemctl", "reset-failed", record.automount_unit_name], check=False)
+    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+
+
+def trigger_automount(record: ManagedMount) -> subprocess.Popen[str]:
+    script = (
+        "import os, sys\n"
+        "flags = os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0)\n"
+        "fd = os.open(sys.argv[1], flags)\n"
+        "os.close(fd)\n"
+    )
+    try:
+        return subprocess.Popen(
+            [sys.executable, "-c", script, str(record.mount_point)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise CommandError(f"Required command not found: {sys.executable}") from exc
+
+
+def finish_trigger_process(process: subprocess.Popen[str]) -> None:
+    try:
+        process.communicate(timeout=0.5)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    process.terminate()
+    try:
+        process.communicate(timeout=1)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    process.kill()
+    try:
+        process.communicate(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def wait_for_mount_active(record: ManagedMount) -> None:
+    deadline = time.monotonic() + MOUNT_TIMEOUT_SECONDS + 5
+    while time.monotonic() < deadline:
+        if is_mounted(record.mount_point) and systemd_is_active(record.unit_name):
+            return
+        time.sleep(0.25)
+    raise CommandError("Automount did not activate the backing mount.")
+
+
+def enable_and_trigger_automount(record: ManagedMount) -> None:
+    run_command(["systemctl", "disable", record.unit_name], check=False)
+    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
+    trigger_process: subprocess.Popen[str] | None = None
+    try:
+        run_command(["systemctl", "enable", "--now", record.automount_unit_name])
+        trigger_process = trigger_automount(record)
+        wait_for_mount_active(record)
+    except CommandError as exc:
+        raise CommandError("Could not mount the share through its automount. Check the share path, username, and password.") from exc
+    finally:
+        if trigger_process is not None:
+            finish_trigger_process(trigger_process)
 
 
 def rollback_failed_create(record: ManagedMount) -> None:
-    run_command(["systemctl", "disable", "--now", record.unit_name], check=False)
-    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
-    if is_mounted(record.mount_point):
-        run_command(["umount", str(record.mount_point)], check=False)
-    remove_if_exists(SYSTEMD_DIR / record.unit_name)
+    disable_managed_units(record)
+    stop_and_unmount(record, check=False)
+    run_command(["systemctl", "stop", record.automount_unit_name], check=False)
+    remove_if_exists(automount_unit_path(record))
+    remove_if_exists(mount_unit_path(record))
     remove_if_exists(record.credential_path)
     remove_if_exists(record.metadata_path)
     rmdir_if_empty(record.mount_point)
     rmdir_if_empty(record.mount_point.parent)
     run_command(["systemctl", "daemon-reload"], check=False)
-    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+    reset_failed_units(record)
 
 
 def delete_mount(record: ManagedMount) -> None:
-    run_command(["systemctl", "disable", "--now", record.unit_name], check=False)
-    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
-    if is_mounted(record.mount_point):
-        run_command(["umount", str(record.mount_point)])
-    if is_mounted(record.mount_point):
-        raise CommandError(f"Still mounted: {record.mount_point}")
+    disable_managed_units(record)
+    stop_and_unmount(record, check=True)
+    run_command(["systemctl", "stop", record.automount_unit_name], check=False)
 
-    remove_if_exists(SYSTEMD_DIR / record.unit_name)
+    remove_if_exists(automount_unit_path(record))
+    remove_if_exists(mount_unit_path(record))
     remove_if_exists(record.credential_path)
     remove_if_exists(record.metadata_path)
     rmdir_if_empty(record.mount_point)
     rmdir_if_empty(record.mount_point.parent)
     run_command(["systemctl", "daemon-reload"])
-    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+    reset_failed_units(record)
 
 
 def set_mount_enabled(record: ManagedMount, enabled: bool) -> None:
+    if record.needs_upgrade:
+        raise ValidationError("This mount was created by an older version. Upgrade it before enabling it.")
+
     if enabled:
         try:
-            run_command(["systemctl", "enable", "--now", record.unit_name])
+            ensure_mount_point(record)
+            write_unit_files(record)
+            run_command(["systemctl", "daemon-reload"])
+            run_command(["systemctl", "disable", record.unit_name], check=False)
+            remove_if_exists(enabled_unit_symlink_path(record.unit_name))
+            enable_and_trigger_automount(record)
         except CommandError as exc:
-            raise CommandError("Could not mount the share. Check the share path, username, and password.") from exc
+            raise CommandError("Could not enable the on-demand mount for this share.") from exc
         return
 
-    run_command(["systemctl", "disable", "--now", record.unit_name])
-    remove_if_exists(enabled_unit_symlink_path(record.unit_name))
-    if is_mounted(record.mount_point):
-        run_command(["umount", str(record.mount_point)])
-    if is_mounted(record.mount_point):
-        raise CommandError(f"Still mounted: {record.mount_point}")
-    run_command(["systemctl", "reset-failed", record.unit_name], check=False)
+    disable_managed_units(record)
+    stop_and_unmount(record, check=True)
+    run_command(["systemctl", "stop", record.automount_unit_name], check=False)
+    reset_failed_units(record)
+
+
+def upgrade_mount(record: ManagedMount) -> None:
+    if not record.credential_path.exists():
+        raise ValidationError(f"Encrypted credentials were not found: {record.credential_path}")
+
+    ensure_mount_point(record)
+    disable_managed_units(record)
+    stop_and_unmount(record, check=True)
+    write_unit_files(record)
+    run_command(["systemctl", "daemon-reload"])
+    enable_and_trigger_automount(record)
+    write_metadata_file(record)
+    reset_failed_units(record)
 
 
 def delete_mount_by_id(manager_id: str) -> None:
-    if not MANAGER_ID_RE.fullmatch(manager_id):
-        raise ValidationError("Invalid managed mount id.")
-
-    metadata_path = METADATA_DIR / f"{manager_id}.json"
-    record = load_record_from_metadata(metadata_path)
-    if record is None:
-        raise ValidationError("Managed mount was not found.")
-
-    delete_mount(record)
+    delete_mount(load_record_by_id(manager_id))
 
 
 def set_mount_enabled_by_id(manager_id: str, enabled: bool) -> None:
+    set_mount_enabled(load_record_by_id(manager_id), enabled)
+
+
+def upgrade_mount_by_id(manager_id: str) -> None:
+    upgrade_mount(load_record_by_id(manager_id))
+
+
+def load_record_by_id(manager_id: str) -> ManagedMount:
     if not MANAGER_ID_RE.fullmatch(manager_id):
         raise ValidationError("Invalid managed mount id.")
 
@@ -616,14 +801,15 @@ def set_mount_enabled_by_id(manager_id: str, enabled: bool) -> None:
     record = load_record_from_metadata(metadata_path)
     if record is None:
         raise ValidationError("Managed mount was not found.")
-
-    set_mount_enabled(record, enabled)
+    return record
 
 
 def load_record_from_metadata(path: Path) -> ManagedMount | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
         return None
 
     required = {
@@ -639,29 +825,85 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
     }
     if not required.issubset(payload):
         return None
-    if not str(payload["source"]).startswith("//"):
-        return None
-    if not str(payload["unit_name"]).endswith(".mount"):
+
+    try:
+        share_path = parse_share_path(str(payload["source"]))
+        creator_uid = int(payload["creator_uid"])
+        creator_gid = int(payload["creator_gid"])
+        manager_id = str(payload["manager_id"])
+    except (TypeError, ValueError, ValidationError):
         return None
 
+    if manager_id != manager_id_for(share_path):
+        return None
+    if path.name != f"{manager_id}.json":
+        return None
+
+    try:
+        expected = build_mount_record(share_path, creator_uid, creator_gid)
+    except MountManagerError:
+        return None
+
+    unit_name = str(payload["unit_name"])
+    automount_unit_name = str(payload.get("automount_unit_name") or expected.automount_unit_name)
     mount_point = Path(str(payload["mount_point"]))
-    active = is_mounted(mount_point)
-    status = "Mounted" if active else systemd_status(str(payload["unit_name"]))
+    credential_path = Path(str(payload["credential_path"]))
+    if unit_name != expected.unit_name:
+        return None
+    if automount_unit_name != expected.automount_unit_name:
+        return None
+    if mount_point.resolve(strict=False) != expected.mount_point.resolve(strict=False):
+        return None
+    if credential_path != expected.credential_path:
+        return None
+
+    try:
+        schema_version = int(payload.get("schema_version", 0))
+    except (TypeError, ValueError):
+        schema_version = 0
+    needs_upgrade = schema_version < 4 or "automount_unit_name" not in payload
+    mounted = is_mounted(expected.mount_point)
+    automount_active = systemd_is_active(automount_unit_name)
+    mount_enabled = systemd_is_enabled(unit_name)
+    active = automount_active and not needs_upgrade
+    if needs_upgrade:
+        status = "Old version, please upgrade"
+    elif mounted and automount_active:
+        status = "Mounted"
+    elif mounted:
+        status = "Mounted, on-demand disabled"
+    elif automount_active:
+        status = "Waiting for access"
+    elif mount_enabled:
+        status = "Startup mount still enabled"
+    else:
+        status = systemd_status(automount_unit_name)
 
     return ManagedMount(
-        manager_id=str(payload["manager_id"]),
-        source=str(payload["source"]),
-        host=str(payload["host"]),
-        share=str(payload["share"]),
-        mount_point=mount_point,
-        unit_name=str(payload["unit_name"]),
-        credential_path=Path(str(payload["credential_path"])),
+        manager_id=manager_id,
+        source=expected.source,
+        host=share_path.host,
+        share=share_path.share,
+        mount_point=expected.mount_point,
+        unit_name=expected.unit_name,
+        automount_unit_name=expected.automount_unit_name,
+        credential_path=expected.credential_path,
         metadata_path=path,
-        creator_uid=int(payload["creator_uid"]),
-        creator_gid=int(payload["creator_gid"]),
+        creator_uid=creator_uid,
+        creator_gid=creator_gid,
+        mounted=mounted,
         active=active,
+        needs_upgrade=needs_upgrade,
         status=status,
     )
+
+
+def systemd_is_active(unit_name: str) -> bool:
+    return run_command(["systemctl", "is-active", "--quiet", unit_name], check=False).returncode == 0
+
+
+def systemd_is_enabled(unit_name: str) -> bool:
+    return run_command(["systemctl", "is-enabled", "--quiet", unit_name], check=False).returncode == 0
 
 
 def systemd_status(unit_name: str) -> str:
@@ -697,7 +939,7 @@ def load_current_smb_mounts() -> list[DisplayedMount]:
         return []
 
     mounts = []
-    for filesystem in payload.get("filesystems") or []:
+    for filesystem in iter_findmnt_filesystems(payload):
         source = str(filesystem.get("source") or "")
         target = str(filesystem.get("target") or "")
         fstype = str(filesystem.get("fstype") or "")
@@ -709,6 +951,8 @@ def load_current_smb_mounts() -> list[DisplayedMount]:
                 mount_point=Path(target),
                 status="Mounted",
                 active=True,
+                openable=True,
+                needs_upgrade=False,
                 managed=False,
             )
         )
@@ -723,6 +967,8 @@ def load_displayed_mounts() -> list[DisplayedMount]:
             mount_point=record.mount_point,
             status=record.status,
             active=record.active,
+            openable=not record.needs_upgrade and (record.active or record.mounted),
+            needs_upgrade=record.needs_upgrade,
             managed=True,
             managed_record=record,
         )
@@ -826,6 +1072,10 @@ def request_helper_delete(record: ManagedMount) -> None:
     run_privileged_helper("delete", {"manager_id": record.manager_id})
 
 
+def request_helper_upgrade(record: ManagedMount) -> None:
+    run_privileged_helper("upgrade", {"manager_id": record.manager_id})
+
+
 def request_helper_set_enabled(record: ManagedMount, enabled: bool) -> None:
     run_privileged_helper(
         "set-enabled",
@@ -853,6 +1103,13 @@ def read_helper_payload() -> dict[str, Any]:
     return payload
 
 
+def helper_bool(payload: dict[str, Any], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise ValidationError(f"Helper payload field must be a boolean: {key}")
+    return value
+
+
 def run_helper_mode(action: str) -> int:
     if os.geteuid() != 0:
         write_helper_response(False, error="Helper must run as root.")
@@ -868,10 +1125,12 @@ def run_helper_mode(action: str) -> int:
             )
         elif action == "delete":
             delete_mount_by_id(str(payload.get("manager_id", "")))
+        elif action == "upgrade":
+            upgrade_mount_by_id(str(payload.get("manager_id", "")))
         elif action == "set-enabled":
             set_mount_enabled_by_id(
                 str(payload.get("manager_id", "")),
-                bool(payload.get("enabled", False)),
+                helper_bool(payload, "enabled"),
             )
         else:
             raise ValidationError("Unknown helper action.")
@@ -1085,7 +1344,7 @@ def run_gui() -> int:
 
             try:
                 validate_credentials(username, password)
-                self.set_status("Creating encrypted startup mount...", "success")
+                self.set_status("Creating encrypted on-demand mount...", "success")
                 request_helper_create(share, username, password)
             except MountManagerError as exc:
                 self.set_status(str(exc), "error")
@@ -1153,7 +1412,7 @@ def run_gui() -> int:
             heading.set_xalign(0)
             root.append(heading)
 
-            label = Gtk.Label(label=f"Delete {record.source} and remove its systemd unit?")
+            label = Gtk.Label(label=f"Delete {record.source} and remove its systemd units?")
             label.set_wrap(True)
             label.set_xalign(0)
             root.append(label)
@@ -1286,13 +1545,16 @@ def run_gui() -> int:
             mount_switch = Gtk.Switch()
             mount_switch.set_valign(Gtk.Align.CENTER)
             mount_switch.set_active(mount.active)
-            mount_switch.set_sensitive(mount.managed)
+            mount_switch.set_sensitive(mount.managed and not mount.needs_upgrade)
             if mount.managed and mount.managed_record is not None:
-                mount_switch.set_tooltip_text("Enable or disable this managed mount")
-                mount_switch.connect(
-                    "notify::active",
-                    lambda switch, _param: self.toggle_mount(mount.managed_record, switch),
-                )
+                if mount.needs_upgrade:
+                    mount_switch.set_tooltip_text("Upgrade this older mount before enabling it")
+                else:
+                    mount_switch.set_tooltip_text("Enable or disable on-demand access for this managed mount")
+                    mount_switch.connect(
+                        "notify::active",
+                        lambda switch, _param: self.toggle_mount(mount.managed_record, switch),
+                    )
             else:
                 mount_switch.set_tooltip_text("This SMB mount is not managed by this app")
 
@@ -1317,19 +1579,26 @@ def run_gui() -> int:
             box.append(text_box)
 
             if mount.managed and mount.managed_record is not None:
-                open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
-                open_button.set_sensitive(mount.active)
-                open_button.set_tooltip_text(
-                    "Open mount folder" if mount.active else "Enable this mount to open its folder"
-                )
-                open_button.connect("clicked", lambda _button: self.open_mount_folder(mount.managed_record))
+                if mount.needs_upgrade:
+                    upgrade_button = Gtk.Button(label="Upgrade")
+                    upgrade_button.set_tooltip_text("Upgrade mount units using the existing encrypted credentials")
+                    upgrade_button.add_css_class("upgrade-action")
+                    upgrade_button.connect("clicked", lambda _button: self.upgrade_mount(mount.managed_record))
+                    box.append(upgrade_button)
+                else:
+                    open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
+                    open_button.set_sensitive(mount.openable)
+                    open_button.set_tooltip_text(
+                        "Open mount folder" if mount.openable else "Enable on-demand access to open its folder"
+                    )
+                    open_button.connect("clicked", lambda _button: self.open_mount_folder(mount.managed_record))
+                    box.append(open_button)
 
                 delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
                 delete_button.set_tooltip_text("Delete mount")
                 delete_button.add_css_class("destructive-action")
                 delete_button.connect("clicked", lambda _button: self.confirm_delete(mount.managed_record))
 
-                box.append(open_button)
                 box.append(delete_button)
             else:
                 not_managed_label = Gtk.Label(label="Not managed")
@@ -1349,7 +1618,7 @@ def run_gui() -> int:
             dialog.set_modal(True)
             dialog.set_program_name(APP_NAME)
             dialog.set_logo_icon_name(APP_ICON_NAME)
-            dialog.set_comments("Create and manage SMB startup mounts.")
+            dialog.set_comments("Create and manage on-demand SMB mounts.")
             dialog.set_authors(APP_DEVELOPERS)
             dialog.add_credit_section("Developed by", APP_DEVELOPERS)
             dialog.set_website(APP_WEBSITE)
@@ -1359,7 +1628,7 @@ def run_gui() -> int:
 
         def mount_created(self, share: str) -> None:
             self.refresh()
-            MessageWindow(self, "SMB Mount Created", f"{share} was successfully mounted.").present()
+            MessageWindow(self, "SMB Mount Created", f"{share} will mount when accessed.").present()
 
         def open_mount_folder(self, record: ManagedMount) -> None:
             if not record.mount_point.exists():
@@ -1370,6 +1639,19 @@ def run_gui() -> int:
                 run_command(["xdg-open", str(record.mount_point)])
             except MountManagerError as exc:
                 MessageWindow(self, "Open Folder Failed", f"Could not open {record.mount_point}: {exc}").present()
+
+        def upgrade_mount(self, record: ManagedMount) -> None:
+            try:
+                request_helper_upgrade(record)
+            except MountManagerError as exc:
+                MessageWindow(self, "Upgrade Failed", str(exc)).present()
+                return
+            except Exception as exc:
+                MessageWindow(self, "Upgrade Failed", f"Unexpected error: {exc}").present()
+                return
+
+            self.refresh()
+            MessageWindow(self, "SMB Mount Upgraded", f"{record.source} will mount when accessed.").present()
 
         def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
             enabled = switch.get_active()
@@ -1404,7 +1686,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--helper",
-        choices=("create", "delete", "set-enabled"),
+        choices=("create", "delete", "upgrade", "set-enabled"),
         help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)

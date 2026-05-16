@@ -1,9 +1,11 @@
 # SMB Mount Manager
 
-Small GTK app for creating SMB mounts that come back on startup.
+Small GTK app for creating SMB mounts that activate on demand.
 
-The app checks the host, asks for credentials, tests the mount, then creates a
-systemd mount unit. Managed shares are mounted under:
+The app checks the host, asks for credentials, tests the mount, then creates
+matching systemd mount and automount units. Only the automount unit is enabled,
+so shares are mounted when accessed instead of during boot. Managed shares live
+under:
 
 ```text
 /mnt/mount-manager
