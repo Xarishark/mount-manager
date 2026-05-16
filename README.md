@@ -1,6 +1,8 @@
 # SMB Mount Manager
 
-Small GTK app for creating SMB mounts that activate on demand.
+> This app is made specifically for Bazzite.
+
+Small GTK app for managing SMB mounts.
 
 The app checks the host, asks for credentials, tests the mount, then creates
 matching systemd mount and automount units. Only the automount unit is enabled,
@@ -29,6 +31,35 @@ the host so it cannot be decrypted on a different machine.
 
 Encrypted credential files live in `/etc/mount-manager/credentials/` as
 `<id>.cred.enc`.
+
+## RPM
+
+The RPM package is available through Terra.
+
+Enable Terra first:
+
+```bash
+sudo sed -i 's/^enabled=0/enabled=1/' /etc/yum.repos.d/terra.repo
+```
+
+Install it on Bazzite with:
+
+```bash
+rpm-ostree install mount-manager
+```
+
+Reboot after installation to boot into the new deployment.
+
+## AppImage
+
+Release AppImages are Bazzite-focused. They are intended for Bazzite and similar
+Fedora-based systems that already provide the desktop and system integration this
+app needs, including GTK4/PyGObject, polkit with `pkexec`, `mount.cifs`, and
+systemd 258 or newer with `systemd-creds`.
+
+The AppImage is not intended to be a fully self-contained cross-distro package.
+It packages the app entrypoint and desktop assets while relying on the host for
+the system tools required to create and manage SMB mounts.
 
 ## Test as an installed app on Bazzite
 

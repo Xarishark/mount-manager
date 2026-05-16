@@ -1,7 +1,7 @@
 name: Create Release
 
 env:
-  WORKFLOW_VERSION: 1
+  WORKFLOW_VERSION: 2
 
 on:
   push:
@@ -52,7 +52,7 @@ jobs:
             echo "Version $new_version not higher than $latest_version, skipping release"
           fi
 
-      - name: Create release
+      - name: Build AppImage and create release
         if: steps.version_check.outputs.new_version != ''
         run: |
           VERSION="${{ steps.version_check.outputs.new_version }}"
@@ -62,7 +62,17 @@ jobs:
             echo "Release v${VERSION} already exists aborting" >&2
             exit 1
           fi
+
+          packaging/build-appimage.sh "$VERSION"
+
+          APPIMAGE="dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
+          CHECKSUM="${APPIMAGE}.sha256"
+          test -f "$APPIMAGE"
+          test -f "$CHECKSUM"
+
           gh release create "v${VERSION}" \
+            "$APPIMAGE" \
+            "$CHECKSUM" \
             --title "v${VERSION}" \
             --generate-notes \
             --target "${{ github.sha }}"
