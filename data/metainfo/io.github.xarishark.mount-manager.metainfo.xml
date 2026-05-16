@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.ublue_os.mount-manager</id>
+  <id>io.github.xarishark.mount-manager</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-only</project_license>
 
@@ -9,7 +9,7 @@
   <developer id="io.github.xarishark">
     <name>Zacharias Xenakis</name>
   </developer>
-  <url type="homepage">https://github.com/ublue-os/mount-manager</url>
+  <url type="homepage">https://github.com/Xarishark/mount-manager</url>
 
   <description>
     <p>
@@ -18,7 +18,7 @@
     </p>
   </description>
 
-  <launchable type="desktop-id">io.github.ublue_os.mount-manager.desktop</launchable>
+  <launchable type="desktop-id">io.github.xarishark.mount-manager.desktop</launchable>
   <provides>
     <binary>mount-manager</binary>
   </provides>
@@ -30,12 +30,7 @@
   </categories>
 
   <releases>
-    <release version="0.1.1" date="2026-05-15">
-      <description>
-        <p>Initial release.</p>
-      </description>
-    </release>
+    <release version="0.1.2" date="2026-05-15" />
   </releases>
-
   <content_rating type="oars-1.1" />
 </component>

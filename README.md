@@ -40,9 +40,9 @@ Install the app files into the overlay:
 
 ```bash
 sudo install -D -m 0755 mount_manager.py /usr/bin/mount-manager
-sudo install -D -m 0644 data/applications/io.github.ublue_os.mount-manager.desktop /usr/share/applications/io.github.ublue_os.mount-manager.desktop
-sudo install -D -m 0644 data/icons/hicolor/scalable/apps/io.github.ublue_os.mount-manager.svg /usr/share/icons/hicolor/scalable/apps/io.github.ublue_os.mount-manager.svg
-sudo install -D -m 0644 data/metainfo/io.github.ublue_os.mount-manager.metainfo.xml /usr/share/metainfo/io.github.ublue_os.mount-manager.metainfo.xml
+sudo install -D -m 0644 data/applications/io.github.xarishark.mount-manager.desktop /usr/share/applications/io.github.xarishark.mount-manager.desktop
+sudo install -D -m 0644 data/icons/hicolor/scalable/apps/io.github.xarishark.mount-manager.svg /usr/share/icons/hicolor/scalable/apps/io.github.xarishark.mount-manager.svg
+sudo install -D -m 0644 data/metainfo/io.github.xarishark.mount-manager.metainfo.xml /usr/share/metainfo/io.github.xarishark.mount-manager.metainfo.xml
 ```
 
 Refresh desktop and icon caches:
