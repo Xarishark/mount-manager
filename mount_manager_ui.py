@@ -156,7 +156,7 @@ def run_gui() -> int:
             self.path_row.connect("changed", lambda _r: self._on_path_changed())
             share_group.add(self.path_row)
 
-            self.host_spinner = Gtk.Spinner()
+            self.host_spinner = Adw.Spinner()
             self.host_spinner.set_valign(Gtk.Align.CENTER)
             self.host_spinner.set_visible(False)
             self.path_row.add_suffix(self.host_spinner)
@@ -211,7 +211,6 @@ def run_gui() -> int:
 
         def _set_host_status(self, *, ok: bool | None, message: str) -> None:
             self.host_spinner.set_visible(False)
-            self.host_spinner.stop()
             if ok is None:
                 self.host_status_icon.set_visible(False)
                 self.path_row.set_title("Share path")
@@ -246,7 +245,6 @@ def run_gui() -> int:
             cancellable = Gio.Cancellable()
             self._cancellable = cancellable
             self.host_spinner.set_visible(True)
-            self.host_spinner.start()
             thread = threading.Thread(
                 target=self._host_check_worker,
                 args=(cancellable, text),
