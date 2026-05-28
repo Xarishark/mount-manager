@@ -334,54 +334,42 @@ def run_gui() -> int:
             self.close()
             self.on_complete()
 
-    class MainWindow(Gtk.ApplicationWindow):
-        def __init__(self, app: Gtk.Application) -> None:
+    class MainWindow(Adw.ApplicationWindow):
+        def __init__(self, app: Adw.Application) -> None:
             super().__init__(application=app, title=APP_NAME)
             self.set_default_size(760, 480)
             self.set_icon_name(APP_ICON_NAME)
 
-            header = Gtk.HeaderBar()
-            title = Gtk.Label(label=APP_NAME)
-            title.add_css_class("heading")
-            header.set_title_widget(title)
-
-            refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-            refresh_button.set_tooltip_text("Refresh")
-            refresh_button.add_css_class("headerbar-control")
-            refresh_button.connect("clicked", lambda _button: self.refresh())
-
             about_action = Gio.SimpleAction.new("about", None)
-            about_action.connect("activate", lambda _action, _param: self.show_about_dialog())
+            about_action.connect("activate", lambda _a, _p: self.show_about_dialog())
             self.add_action(about_action)
 
             menu = Gio.Menu()
             menu.append(f"About {APP_NAME}", "win.about")
 
-            menu_button = Gtk.MenuButton()
-            menu_button.set_icon_name("open-menu-symbolic")
+            menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
             menu_button.set_menu_model(menu)
             menu_button.set_tooltip_text("Main menu")
-            menu_button.add_css_class("headerbar-control")
 
-            add_button = Gtk.Button(label="ADD SHARE")
+            refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+            refresh_button.set_tooltip_text("Refresh")
+            refresh_button.connect("clicked", lambda _b: self.refresh())
+
+            add_button = Gtk.Button(label="Add Share")
             add_button.set_tooltip_text("Add share")
             add_button.add_css_class("suggested-action")
-            add_button.add_css_class("headerbar-control")
-            add_button.add_css_class("add-share-button")
-            add_button.connect("clicked", lambda _button: self.show_add_dialog())
+            add_button.connect("clicked", lambda _b: self.show_add_dialog())
+
+            header = Adw.HeaderBar()
             header.pack_start(add_button)
             header.pack_end(menu_button)
             header.pack_end(refresh_button)
 
-            self.set_titlebar(header)
+            self.toast_overlay = Adw.ToastOverlay()
 
-            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-            root.add_css_class("mount-root")
-            root.set_margin_top(16)
-            root.set_margin_bottom(16)
-            root.set_margin_start(16)
-            root.set_margin_end(16)
-            self.set_child(root)
+            # Content area; Tasks 6-8 replace the list/empty children inside it.
+            self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            self.toast_overlay.set_child(self.content_box)
 
             self.empty_label = Gtk.Label(label="No SMB mounts found.")
             self.empty_label.add_css_class("dim-label")
@@ -395,10 +383,23 @@ def run_gui() -> int:
             scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             scroller.set_child(self.list_box)
             scroller.set_vexpand(True)
-            root.append(scroller)
-            root.append(self.empty_label)
+            scroller.set_margin_top(16)
+            scroller.set_margin_bottom(16)
+            scroller.set_margin_start(16)
+            scroller.set_margin_end(16)
+
+            self.content_box.append(scroller)
+            self.content_box.append(self.empty_label)
+
+            toolbar_view = Adw.ToolbarView()
+            toolbar_view.add_top_bar(header)
+            toolbar_view.set_content(self.toast_overlay)
+            self.set_content(toolbar_view)
 
             self.refresh()
+
+        def show_toast(self, message: str) -> None:
+            self.toast_overlay.add_toast(Adw.Toast(title=message))
 
         def refresh(self) -> None:
             while True:
