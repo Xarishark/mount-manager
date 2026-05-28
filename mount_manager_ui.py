@@ -388,6 +388,7 @@ def run_gui() -> int:
             self.preferences_page.set_vexpand(True)
 
             self.mount_group = Adw.PreferencesGroup()
+            self.mount_group.set_separate_rows(True)
             self.preferences_page.add(self.mount_group)
 
             self.content_box.append(self.preferences_page)
