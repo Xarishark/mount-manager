@@ -55,12 +55,15 @@ The application is split across two files:
 
 ## Packaging
 
-- `packaging/build-appimage.sh` installs both `mount_manager.py` (as `mount-manager`) and
-  `mount_manager_ui.py` (verbatim filename) into `$appdir/usr/bin/`. Python's
-  `sys.path[0]` covers the script directory, so the bare `import mount_manager_ui` in the
-  GUI shim resolves without `sys.path` manipulation.
+- `packaging/build-appimage.sh` installs both `mount_manager.py` and `mount_manager_ui.py`
+  into `$appdir/usr/bin/` under their real filenames, then creates a `mount-manager`
+  symlink pointing at `mount_manager.py` for the AppRun entry point. The real filenames
+  matter: `mount_manager_ui.py` does `from mount_manager import …`, so the file backing
+  that module must be named `mount_manager.py` on disk. Python's `sys.path[0]` covers the
+  script directory, so both imports resolve without `sys.path` manipulation.
 - `packaging/appimage-helper.patch` rewrites the helper invocation so the AppImage
-  re-execs itself under `pkexec`. Do not change the helper CLI surface
+  re-execs itself under `pkexec`. It targets `mount_manager.py` (the installed filename),
+  not the `mount-manager` symlink. Do not change the helper CLI surface
   (`--helper {create|delete|upgrade|set-enabled}`) without updating this patch.
 - If you add a new top-level Python module that the GUI imports, you must add a matching
   `install` line in `packaging/build-appimage.sh` AND in the README's manual-install

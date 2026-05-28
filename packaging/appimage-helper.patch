@@ -1,6 +1,6 @@
-diff --git a/mount-manager b/mount-manager
---- a/mount-manager
-+++ b/mount-manager
+diff --git a/mount_manager.py b/mount_manager.py
+--- a/mount_manager.py
++++ b/mount_manager.py
 @@ -921,18 +921,51 @@
      return displayed
  
