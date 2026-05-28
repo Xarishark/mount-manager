@@ -12,10 +12,11 @@ from typing import Any
 
 import gi
 
+gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import Gdk, Gio, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, Gtk, Pango  # noqa: E402
 
 from mount_manager import (
     APP_DEVELOPERS,
@@ -23,12 +24,13 @@ from mount_manager import (
     APP_ID,
     APP_NAME,
     APP_WEBSITE,
+    MIN_LIBADWAITA_VERSION,
     DisplayedMount,
     ManagedMount,
     MountManagerError,
     SharePath,
+    _libadwaita_supports,
     check_smb_host_reachable,
-    detect_color_scheme,
     load_displayed_mounts,
     request_helper_create,
     request_helper_delete,
@@ -39,102 +41,26 @@ from mount_manager import (
 )
 
 
-APP_CSS = """
-window {
-  background: @theme_bg_color;
-  color: @theme_fg_color;
-}
-
-headerbar {
-  background: @theme_base_color;
-  color: @theme_text_color;
-}
-
-.mount-root {
-  background: @theme_bg_color;
-}
-
-.boxed-list {
-  background: @theme_base_color;
-  color: @theme_text_color;
-  border: 1px solid alpha(@theme_fg_color, 0.16);
-  border-radius: 8px;
-}
-
-.boxed-list row {
-  background: transparent;
-  color: @theme_text_color;
-}
-
-.boxed-list row:not(:last-child) {
-  border-bottom: 1px solid alpha(@theme_fg_color, 0.10);
-}
-
-.dim-label {
-  opacity: 0.72;
-}
-
-.error {
-  color: #c01c28;
-}
-
-.success {
-  color: #26a269;
-}
-
-button.headerbar-control,
-menubutton.headerbar-control > button {
-  min-height: 34px;
-  min-width: 34px;
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-
-button.add-share-button {
-  font-weight: 700;
-  padding-left: 12px;
-  padding-right: 12px;
-}
-
-button.upgrade-action {
-  background: #26a269;
-  color: white;
-}
-
-button.upgrade-action:hover {
-  background: #2ec27e;
-}
-
-button.upgrade-action:active {
-  background: #1a7f52;
-}
-"""
-
-
-def apply_theme(Gtk: Any, Gdk: Any) -> None:
-    settings = Gtk.Settings.get_default()
-    if settings is not None:
-        settings.set_property(
-            "gtk-application-prefer-dark-theme",
-            detect_color_scheme() == "dark",
+def ensure_libadwaita_supported() -> None:
+    """Print an error and raise SystemExit if libadwaita is too old."""
+    if not _libadwaita_supports(Adw.MAJOR_VERSION, Adw.MINOR_VERSION):
+        required = ".".join(str(v) for v in MIN_LIBADWAITA_VERSION)
+        found = f"{Adw.MAJOR_VERSION}.{Adw.MINOR_VERSION}"
+        print(
+            f"libadwaita {found} found, but this app requires {required} or newer.",
+            file=sys.stderr,
         )
+        raise SystemExit(1)
 
-    display = Gdk.Display.get_default()
-    if display is None:
-        return
 
+def apply_style_manager() -> None:
+    """Hand color-scheme selection to libadwaita's system preference tracker."""
+    Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
     Gtk.Window.set_default_icon_name(APP_ICON_NAME)
-
-    provider = Gtk.CssProvider()
-    provider.load_from_data(APP_CSS.encode("utf-8"))
-    Gtk.StyleContext.add_provider_for_display(
-        display,
-        provider,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-    )
 
 
 def run_gui() -> int:
+    ensure_libadwaita_supported()
     if not Gtk.init_check():
         print(
             "GTK could not connect to your graphical session. Run this from your "
@@ -149,7 +75,7 @@ def run_gui() -> int:
             file=sys.stderr,
         )
         return 1
-    apply_theme(Gtk, Gdk)
+    apply_style_manager()
 
     class AddShareWindow(Gtk.Window):
         def __init__(self, parent: Gtk.Window, on_complete: Any) -> None:
@@ -622,7 +548,7 @@ def run_gui() -> int:
         def confirm_delete(self, record: ManagedMount) -> None:
             DeleteMountWindow(self, record, self.refresh).present()
 
-    class MountManagerApplication(Gtk.Application):
+    class MountManagerApplication(Adw.Application):
         def __init__(self) -> None:
             super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
 
