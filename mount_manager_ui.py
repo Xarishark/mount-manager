@@ -91,6 +91,32 @@ def run_gui() -> int:
         return 1
     apply_style_manager()
 
+    def build_shortcuts_window(parent: Gtk.Window) -> Gtk.ShortcutsWindow:
+        """Construct the keyboard shortcuts dialog for the app."""
+        window = Gtk.ShortcutsWindow(transient_for=parent, modal=True)
+
+        section = Gtk.ShortcutsSection(section_name="main", visible=True)
+
+        general = Gtk.ShortcutsGroup(title="General")
+        general.append(
+            Gtk.ShortcutsShortcut(title="Add Share", accelerator="<Primary>n")
+        )
+        general.append(Gtk.ShortcutsShortcut(title="Refresh", accelerator="<Primary>r"))
+        general.append(Gtk.ShortcutsShortcut(title="Primary Menu", accelerator="F10"))
+        general.append(
+            Gtk.ShortcutsShortcut(
+                title="Keyboard Shortcuts", accelerator="<Primary>question"
+            )
+        )
+        general.append(
+            Gtk.ShortcutsShortcut(title="Close Window", accelerator="<Primary>w")
+        )
+        general.append(Gtk.ShortcutsShortcut(title="Quit", accelerator="<Primary>q"))
+        section.append(general)
+
+        window.add_section(section)
+        return window
+
     class AddShareDialog(Adw.Dialog):
         def __init__(self, main_window: "MainWindow") -> None:
             super().__init__()
@@ -303,16 +329,37 @@ def run_gui() -> int:
             about_action.connect("activate", lambda _a, _p: self.show_about_dialog())
             self.add_action(about_action)
 
+            close_action = Gio.SimpleAction.new("close", None)
+            close_action.connect("activate", lambda _a, _p: self.close())
+            self.add_action(close_action)
+            app.set_accels_for_action("win.close", ["<Primary>w"])
+
+            add_share_action = Gio.SimpleAction.new("add-share", None)
+            add_share_action.connect("activate", lambda _a, _p: self.show_add_dialog())
+            self.add_action(add_share_action)
+            app.set_accels_for_action("win.add-share", ["<Primary>n"])
+
+            refresh_action = Gio.SimpleAction.new("refresh", None)
+            refresh_action.connect("activate", lambda _a, _p: self.refresh())
+            self.add_action(refresh_action)
+            app.set_accels_for_action("win.refresh", ["<Primary>r"])
+
+            show_menu_action = Gio.SimpleAction.new("show-menu", None)
+            show_menu_action.connect("activate", lambda _a, _p: self._open_primary_menu())
+            self.add_action(show_menu_action)
+            app.set_accels_for_action("win.show-menu", ["F10"])
+
             menu = Gio.Menu()
+            menu.append("Keyboard Shortcuts", "app.shortcuts")
             menu.append(f"About {APP_NAME}", "win.about")
 
-            menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
-            menu_button.set_menu_model(menu)
-            menu_button.set_tooltip_text("Primary menu")
+            self.menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
+            self.menu_button.set_menu_model(menu)
+            self.menu_button.set_tooltip_text("Primary menu")
 
             refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
             refresh_button.set_tooltip_text("Refresh")
-            refresh_button.connect("clicked", lambda _b: self.refresh())
+            refresh_button.set_action_name("win.refresh")
 
             add_button_content = Adw.ButtonContent(
                 icon_name="list-add-symbolic",
@@ -321,11 +368,11 @@ def run_gui() -> int:
             add_button = Gtk.Button()
             add_button.set_child(add_button_content)
             add_button.set_tooltip_text("Mount a new SMB share")
-            add_button.connect("clicked", lambda _b: self.show_add_dialog())
+            add_button.set_action_name("win.add-share")
 
             header = Adw.HeaderBar()
             header.pack_start(add_button)
-            header.pack_end(menu_button)
+            header.pack_end(self.menu_button)
             header.pack_end(refresh_button)
 
             self.toast_overlay = Adw.ToastOverlay()
@@ -344,7 +391,7 @@ def run_gui() -> int:
             empty_action.set_halign(Gtk.Align.CENTER)
             empty_action.add_css_class("suggested-action")
             empty_action.add_css_class("pill")
-            empty_action.connect("clicked", lambda _b: self.show_add_dialog())
+            empty_action.set_action_name("win.add-share")
             self.empty_page.set_child(empty_action)
 
             self.preferences_page = Adw.PreferencesPage()
@@ -362,6 +409,9 @@ def run_gui() -> int:
             self.set_content(toolbar_view)
 
             self.refresh()
+
+        def _open_primary_menu(self) -> None:
+            self.menu_button.popup()
 
         def show_toast(self, message: str) -> None:
             self.toast_overlay.add_toast(Adw.Toast(title=message))
@@ -538,6 +588,23 @@ def run_gui() -> int:
     class MountManagerApplication(Adw.Application):
         def __init__(self) -> None:
             super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+            quit_action = Gio.SimpleAction.new("quit", None)
+            quit_action.connect("activate", lambda _a, _p: self.quit())
+            self.add_action(quit_action)
+            self.set_accels_for_action("app.quit", ["<Primary>q"])
+
+            shortcuts_action = Gio.SimpleAction.new("shortcuts", None)
+            shortcuts_action.connect("activate", lambda _a, _p: self._show_shortcuts())
+            self.add_action(shortcuts_action)
+            self.set_accels_for_action("app.shortcuts", ["<Primary>question"])
+
+        def _show_shortcuts(self) -> None:
+            window = self.props.active_window
+            if window is None:
+                return
+            shortcuts_window = build_shortcuts_window(window)
+            shortcuts_window.present()
 
         def do_activate(self) -> None:
             window = self.props.active_window
