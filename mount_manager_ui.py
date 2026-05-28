@@ -45,7 +45,6 @@ from mount_manager import (
     request_helper_delete,
     request_helper_set_enabled,
     request_helper_upgrade,
-    run_command,
     validate_credentials,
 )
 
@@ -513,10 +512,18 @@ def run_gui() -> int:
             if not record.mount_point.exists():
                 self.show_toast(f"Mount folder does not exist: {record.mount_point}")
                 return
+            launcher = Gtk.FileLauncher.new(Gio.File.new_for_path(str(record.mount_point)))
+            launcher.launch(self, None, self._on_open_folder_done)
+
+        def _on_open_folder_done(
+            self, launcher: Gtk.FileLauncher, result: Gio.AsyncResult
+        ) -> None:
             try:
-                run_command(["xdg-open", str(record.mount_point)])
-            except MountManagerError as exc:
-                self.show_toast(f"Could not open {record.mount_point}: {exc}")
+                launcher.launch_finish(result)
+            except GLib.Error as exc:
+                if exc.matches(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED):
+                    return
+                self.show_toast(f"Could not open folder: {exc.message}")
 
         def upgrade_mount(self, record: ManagedMount) -> None:
             try:
