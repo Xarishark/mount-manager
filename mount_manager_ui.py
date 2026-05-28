@@ -410,14 +410,11 @@ def run_gui() -> int:
             self.toast_overlay.add_toast(Adw.Toast(title=message))
 
         def refresh(self) -> None:
-            rows_to_remove = []
-            row = self.mount_group.get_first_child()
-            while row is not None:
-                rows_to_remove.append(row)
-                row = row.get_next_sibling()
-            for row in rows_to_remove:
-                if isinstance(row, Adw.ActionRow):
-                    self.mount_group.remove(row)
+            while True:
+                row = self.mount_group.get_row(0)
+                if row is None:
+                    break
+                self.mount_group.remove(row)
 
             mounts = load_displayed_mounts()
             self.empty_label.set_visible(not mounts)
