@@ -8,6 +8,7 @@ GTK when invoked with ``--helper``.
 from __future__ import annotations
 
 import sys
+import threading
 from typing import Any
 
 import gi
@@ -98,6 +99,7 @@ def run_gui() -> int:
             self.main_window = main_window
             self.share_path: SharePath | None = None
             self._debounce_id: int = 0
+            self._cancellable: Gio.Cancellable | None = None
 
             self.cancel_button = Gtk.Button(label="Cancel")
             self.cancel_button.connect("clicked", lambda _b: self.close())
@@ -167,6 +169,9 @@ def run_gui() -> int:
             self.connect("closed", self._cleanup)
 
         def _cleanup(self, *_args) -> None:
+            if self._cancellable is not None:
+                self._cancellable.cancel()
+                self._cancellable = None
             if self._debounce_id:
                 GLib.source_remove(self._debounce_id)
                 self._debounce_id = 0
@@ -198,6 +203,9 @@ def run_gui() -> int:
             self._update_add_sensitive()
             self._hide_banner()
             self._set_host_status(ok=None, message="")
+            if self._cancellable is not None:
+                self._cancellable.cancel()
+                self._cancellable = None
             if self._debounce_id:
                 GLib.source_remove(self._debounce_id)
                 self._debounce_id = 0
@@ -208,22 +216,54 @@ def run_gui() -> int:
 
         def _run_host_check(self) -> bool:
             self._debounce_id = 0
+            text = self.path_row.get_text()
+            cancellable = Gio.Cancellable()
+            self._cancellable = cancellable
             self.host_spinner.set_visible(True)
             self.host_spinner.start()
-            try:
-                share_path = check_smb_host_reachable(self.path_row.get_text())
-            except MountManagerError as exc:
-                self._set_host_status(ok=False, message=str(exc))
-                return False
-            except Exception as exc:
-                self._set_host_status(ok=False, message=f"Unexpected error: {exc}")
-                return False
+            thread = threading.Thread(
+                target=self._host_check_worker,
+                args=(cancellable, text),
+                daemon=True,
+            )
+            thread.start()
+            return False  # don't repeat the timeout
 
+        def _host_check_worker(
+            self, cancellable: Gio.Cancellable, text: str
+        ) -> None:
+            try:
+                share_path = check_smb_host_reachable(text)
+            except MountManagerError as exc:
+                result: tuple[SharePath | None, BaseException | None] = (None, exc)
+            except Exception as exc:
+                result = (None, exc)
+            else:
+                result = (share_path, None)
+            if cancellable.is_cancelled():
+                return
+            GLib.idle_add(self._on_host_check_done, cancellable, result[0], result[1])
+
+        def _on_host_check_done(
+            self,
+            cancellable: Gio.Cancellable,
+            share_path: SharePath | None,
+            exc: BaseException | None,
+        ) -> bool:
+            if cancellable.is_cancelled() or cancellable is not self._cancellable:
+                return False  # stale or cancelled; ignore
+            self._cancellable = None
+            if exc is not None:
+                if isinstance(exc, MountManagerError):
+                    self._set_host_status(ok=False, message=str(exc))
+                else:
+                    self._set_host_status(ok=False, message=f"Unexpected error: {exc}")
+                return False
             self.share_path = share_path
             self._set_host_status(ok=True, message="Host is reachable")
             self.credentials_group.set_sensitive(True)
             self._update_add_sensitive()
-            return False  # don't repeat the timeout
+            return False
 
         def _update_add_sensitive(self) -> None:
             ready = (
