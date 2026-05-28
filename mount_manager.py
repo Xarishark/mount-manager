@@ -50,6 +50,15 @@ CREDENTIAL_NAME = "smbcreds"
 # Mount-unit credentials (LoadCredentialEncrypted=) require this systemd version.
 MIN_SYSTEMD_VERSION = 258
 
+# Adw.Dialog and Adw.AlertDialog require libadwaita 1.5 or newer.
+MIN_LIBADWAITA_VERSION: tuple[int, int] = (1, 5)
+
+
+def _libadwaita_supports(major: int, minor: int) -> bool:
+    """Return True if the given libadwaita (major, minor) meets the app's minimum."""
+    return (major, minor) >= MIN_LIBADWAITA_VERSION
+
+
 APP_CSS = """
 window {
   background: @theme_bg_color;
