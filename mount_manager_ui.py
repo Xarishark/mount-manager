@@ -110,8 +110,6 @@ def run_gui() -> int:
             self.add_button.connect("clicked", lambda _b: self._on_add_clicked())
 
             header = Adw.HeaderBar()
-            header.set_show_start_title_buttons(False)
-            header.set_show_end_title_buttons(False)
             header.pack_start(self.cancel_button)
             header.pack_end(self.add_button)
 
@@ -165,8 +163,10 @@ def run_gui() -> int:
             toolbar.add_top_bar(header)
             toolbar.set_content(body)
             self.set_child(toolbar)
+            self.set_default_widget(self.add_button)
             
             self.connect("closed", self._cleanup)
+            self.connect("map", lambda _d: self.path_row.grab_focus())
 
         def _cleanup(self, *_args) -> None:
             if self._cancellable is not None:
