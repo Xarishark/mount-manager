@@ -314,9 +314,13 @@ def run_gui() -> int:
             refresh_button.set_tooltip_text("Refresh")
             refresh_button.connect("clicked", lambda _b: self.refresh())
 
-            add_button = Gtk.Button(label="Add Share")
+            add_button_content = Adw.ButtonContent(
+                icon_name="list-add-symbolic",
+                label="Add Share",
+            )
+            add_button = Gtk.Button()
+            add_button.set_child(add_button_content)
             add_button.set_tooltip_text("Mount a new SMB share")
-            add_button.add_css_class("suggested-action")
             add_button.connect("clicked", lambda _b: self.show_add_dialog())
 
             header = Adw.HeaderBar()
