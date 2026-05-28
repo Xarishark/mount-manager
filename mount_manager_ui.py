@@ -288,70 +288,6 @@ def run_gui() -> int:
             ok_button.connect("clicked", lambda _button: self.close())
             buttons.append(ok_button)
 
-    class DeleteMountWindow(Gtk.Window):
-        def __init__(self, parent: Gtk.Window, record: ManagedMount, on_complete: Any) -> None:
-            super().__init__(title="Delete SMB Mount")
-            self.set_transient_for(parent)
-            self.set_modal(True)
-            self.set_default_size(460, -1)
-            self.set_resizable(False)
-            self.record = record
-            self.on_complete = on_complete
-
-            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
-            root.set_margin_top(18)
-            root.set_margin_bottom(18)
-            root.set_margin_start(18)
-            root.set_margin_end(18)
-            self.set_child(root)
-
-            heading = Gtk.Label(label="Delete SMB Mount")
-            heading.add_css_class("title-3")
-            heading.set_xalign(0)
-            root.append(heading)
-
-            label = Gtk.Label(label=f"Delete {record.source} and remove its systemd units?")
-            label.set_wrap(True)
-            label.set_xalign(0)
-            root.append(label)
-
-            self.error_label = Gtk.Label()
-            self.error_label.set_xalign(0)
-            self.error_label.set_wrap(True)
-            self.error_label.add_css_class("error")
-            self.error_label.set_visible(False)
-            root.append(self.error_label)
-
-            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            buttons.set_halign(Gtk.Align.END)
-            root.append(buttons)
-
-            cancel_button = Gtk.Button(label="Cancel")
-            cancel_button.connect("clicked", lambda _button: self.close())
-            buttons.append(cancel_button)
-
-            delete_button = Gtk.Button(label="Delete")
-            delete_button.add_css_class("destructive-action")
-            delete_button.connect("clicked", lambda _button: self.delete_share())
-            buttons.append(delete_button)
-
-        def show_error(self, message: str) -> None:
-            self.error_label.set_text(message)
-            self.error_label.set_visible(True)
-
-        def delete_share(self) -> None:
-            try:
-                request_helper_delete(self.record)
-            except MountManagerError as exc:
-                self.show_error(str(exc))
-                return
-            except Exception as exc:
-                self.show_error(f"Unexpected error: {exc}")
-                return
-
-            self.close()
-            self.on_complete()
-
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
             super().__init__(application=app, title=APP_NAME)
@@ -562,7 +498,38 @@ def run_gui() -> int:
                 self.refresh()
 
         def confirm_delete(self, record: ManagedMount) -> None:
-            DeleteMountWindow(self, record, self.refresh).present()
+            alert = Adw.AlertDialog(
+                heading="Delete this SMB mount?",
+                body=(
+                    f"Removes {record.source} and its systemd units. "
+                    "The encrypted credentials will also be deleted."
+                ),
+            )
+            alert.add_response("cancel", "Cancel")
+            alert.add_response("delete", "Delete")
+            alert.set_response_appearance(
+                "delete", Adw.ResponseAppearance.DESTRUCTIVE
+            )
+            alert.set_default_response("cancel")
+            alert.set_close_response("cancel")
+            alert.connect("response", self._on_delete_response, record)
+            alert.present(self)
+
+        def _on_delete_response(
+            self, _alert: Adw.AlertDialog, response: str, record: ManagedMount
+        ) -> None:
+            if response != "delete":
+                return
+            try:
+                request_helper_delete(record)
+            except MountManagerError as exc:
+                self.show_toast(f"Delete failed: {exc}")
+                return
+            except Exception as exc:
+                self.show_toast(f"Delete failed: {exc}")
+                return
+            self.refresh()
+            self.show_toast(f"{record.source} removed.")
 
     class MountManagerApplication(Adw.Application):
         def __init__(self) -> None:
