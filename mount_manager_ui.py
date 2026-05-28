@@ -291,7 +291,7 @@ def run_gui() -> int:
 
             self.close()
             self.main_window.refresh()
-            self.main_window.show_toast(f"{share} will mount when accessed.")
+            self.main_window.show_toast(f"{share} added.")
 
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
