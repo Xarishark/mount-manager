@@ -164,6 +164,13 @@ def run_gui() -> int:
             toolbar.add_top_bar(header)
             toolbar.set_content(body)
             self.set_child(toolbar)
+            
+            self.connect("closed", self._cleanup)
+
+        def _cleanup(self, *_args) -> None:
+            if self._debounce_id:
+                GLib.source_remove(self._debounce_id)
+                self._debounce_id = 0
 
         def _show_banner(self, message: str) -> None:
             self.banner.set_title(message)
