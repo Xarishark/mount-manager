@@ -385,9 +385,18 @@ def run_gui() -> int:
             self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self.toast_overlay.set_child(self.content_box)
 
-            self.empty_label = Gtk.Label(label="No SMB mounts found.")
-            self.empty_label.add_css_class("dim-label")
-            self.empty_label.set_margin_top(32)
+            self.empty_page = Adw.StatusPage()
+            self.empty_page.set_icon_name("folder-remote-symbolic")
+            self.empty_page.set_title("No SMB shares")
+            self.empty_page.set_description("Click <i>Add Share</i> to mount one.")
+            self.empty_page.set_vexpand(True)
+
+            empty_action = Gtk.Button(label="Add Share")
+            empty_action.set_halign(Gtk.Align.CENTER)
+            empty_action.add_css_class("suggested-action")
+            empty_action.add_css_class("pill")
+            empty_action.connect("clicked", lambda _b: self.show_add_dialog())
+            self.empty_page.set_child(empty_action)
 
             self.preferences_page = Adw.PreferencesPage()
             self.preferences_page.set_vexpand(True)
@@ -397,7 +406,7 @@ def run_gui() -> int:
             self.preferences_page.add(self.mount_group)
 
             self.content_box.append(self.preferences_page)
-            self.content_box.append(self.empty_label)
+            self.content_box.append(self.empty_page)
 
             toolbar_view = Adw.ToolbarView()
             toolbar_view.add_top_bar(header)
@@ -417,7 +426,7 @@ def run_gui() -> int:
                 self.mount_group.remove(row)
 
             mounts = load_displayed_mounts()
-            self.empty_label.set_visible(not mounts)
+            self.empty_page.set_visible(not mounts)
             self.preferences_page.set_visible(bool(mounts))
 
             for mount in mounts:
