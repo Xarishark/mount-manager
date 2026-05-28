@@ -191,9 +191,9 @@ def run_gui() -> int:
                 self.path_row.set_title("Share path")
                 return
             if ok:
-                self.host_status_icon.set_from_icon_name("emblem-ok-symbolic")
+                self.host_status_icon.set_from_icon_name("checkmark-symbolic")
             else:
-                self.host_status_icon.set_from_icon_name("dialog-error-symbolic")
+                self.host_status_icon.set_from_icon_name("error-symbolic")
             self.host_status_icon.set_visible(True)
             self.host_status_icon.set_tooltip_text(message)
 
@@ -331,7 +331,7 @@ def run_gui() -> int:
             self.toast_overlay.set_child(self.content_box)
 
             self.empty_page = Adw.StatusPage()
-            self.empty_page.set_icon_name("folder-remote-symbolic")
+            self.empty_page.set_icon_name("network-server-symbolic")
             self.empty_page.set_title("No SMB shares")
             self.empty_page.set_description('Click "Add Share" to mount one')
             self.empty_page.set_vexpand(True)
