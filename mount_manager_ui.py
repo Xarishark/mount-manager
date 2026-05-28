@@ -91,31 +91,24 @@ def run_gui() -> int:
         return 1
     apply_style_manager()
 
-    def build_shortcuts_window(parent: Gtk.Window) -> Gtk.ShortcutsWindow:
+    def build_shortcuts_dialog() -> Adw.ShortcutsDialog:
         """Construct the keyboard shortcuts dialog for the app."""
-        window = Gtk.ShortcutsWindow(transient_for=parent, modal=True)
+        dialog = Adw.ShortcutsDialog()
 
-        section = Gtk.ShortcutsSection(section_name="main", visible=True)
-
-        general = Gtk.ShortcutsGroup(title="General")
-        general.append(
-            Gtk.ShortcutsShortcut(title="Add Share", accelerator="<Primary>n")
-        )
-        general.append(Gtk.ShortcutsShortcut(title="Refresh", accelerator="<Primary>r"))
-        general.append(Gtk.ShortcutsShortcut(title="Primary Menu", accelerator="F10"))
-        general.append(
-            Gtk.ShortcutsShortcut(
-                title="Keyboard Shortcuts", accelerator="<Primary>question"
+        general = Adw.ShortcutsSection(title="General")
+        general.add(Adw.ShortcutsItem(title="Add Share", action_name="win.add-share"))
+        general.add(Adw.ShortcutsItem(title="Refresh", action_name="win.refresh"))
+        general.add(Adw.ShortcutsItem(title="Primary Menu", action_name="win.show-menu"))
+        general.add(
+            Adw.ShortcutsItem(
+                title="Keyboard Shortcuts", action_name="app.shortcuts"
             )
         )
-        general.append(
-            Gtk.ShortcutsShortcut(title="Close Window", accelerator="<Primary>w")
-        )
-        general.append(Gtk.ShortcutsShortcut(title="Quit", accelerator="<Primary>q"))
-        section.append(general)
+        general.add(Adw.ShortcutsItem(title="Close Window", action_name="win.close"))
+        general.add(Adw.ShortcutsItem(title="Quit", action_name="app.quit"))
 
-        window.add_section(section)
-        return window
+        dialog.add(general)
+        return dialog
 
     class AddShareDialog(Adw.Dialog):
         def __init__(self, main_window: "MainWindow") -> None:
@@ -601,8 +594,8 @@ def run_gui() -> int:
             window = self.props.active_window
             if window is None:
                 return
-            shortcuts_window = build_shortcuts_window(window)
-            shortcuts_window.present()
+            dialog = build_shortcuts_dialog()
+            dialog.present(window)
 
         def do_activate(self) -> None:
             window = self.props.active_window
