@@ -485,7 +485,7 @@ def run_gui() -> int:
                 self.show_toast(f"Upgrade failed: {exc}")
                 return
             self.refresh()
-            self.show_toast(f"{record.source} upgraded; will mount when accessed.")
+            self.show_toast(f"{record.source} upgraded.")
 
         def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
             enabled = switch.get_active()
