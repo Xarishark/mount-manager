@@ -279,6 +279,6 @@ Manual verification checklist for the user:
 - Libadwaita Spinner docs:
   https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.Spinner.html
 - HIG-fixes plan (notes the deprecation this spec resolves):
-  `docs/superpowers/plans/2026-05-28-hig-fixes.md` Task 6
+  `docs/plans/2026-05-28-hig-fixes.md` Task 6
 - Original migration design (for context on hybrid row pattern, etc.):
-  `docs/superpowers/specs/2026-05-28-libadwaita-migration-design.md`
+  `docs/specs/2026-05-28-libadwaita-migration-design.md`

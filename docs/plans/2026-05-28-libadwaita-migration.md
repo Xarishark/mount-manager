@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3, PyGObject (`gi`), GTK 4, libadwaita ≥ 1.5, stdlib `unittest` for tests.
 
-**Spec reference:** `docs/superpowers/specs/2026-05-28-libadwaita-migration-design.md`
+**Spec reference:** `docs/specs/2026-05-28-libadwaita-migration-design.md`
 
 ## Testing strategy
 

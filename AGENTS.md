@@ -68,8 +68,8 @@ The application is split across two files:
 
 ## Reference docs
 
-- Design spec: `docs/superpowers/specs/2026-05-28-libadwaita-migration-design.md`
-- Implementation plan (executed, kept for context): `docs/superpowers/plans/2026-05-28-libadwaita-migration.md`
+- Design spec: `docs/specs/2026-05-28-libadwaita-migration-design.md`
+- Implementation plan (executed, kept for context): `docs/plans/2026-05-28-libadwaita-migration.md`
 
 ## Working rules
 - Prefer native tools (view/edit/create/grep/glob) over shell for file reading, editing, and

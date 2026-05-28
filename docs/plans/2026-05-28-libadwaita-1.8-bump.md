@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3, GTK 4 (≥ 4.18 transitively), libadwaita ≥ 1.8, PyGObject. Tests: stock `unittest` (no pytest).
 
-**Source spec:** `docs/superpowers/specs/2026-05-28-libadwaita-1.8-bump-design.md`
+**Source spec:** `docs/specs/2026-05-28-libadwaita-1.8-bump-design.md`
 
 **Pre-flight (executor):**
 - Confirm working tree is clean for tracked files (`git status` should show no `M` lines for `mount_manager.py`, `mount_manager_ui.py`, `README.md`, or `tests/`).
