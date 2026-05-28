@@ -415,18 +415,17 @@ def run_gui() -> int:
             AddShareDialog(self).present(self)
 
         def show_about_dialog(self) -> None:
-            dialog = Gtk.AboutDialog()
-            dialog.set_transient_for(self)
-            dialog.set_modal(True)
-            dialog.set_program_name(APP_NAME)
-            dialog.set_logo_icon_name(APP_ICON_NAME)
-            dialog.set_comments("Create and manage on-demand SMB mounts.")
-            dialog.set_authors(APP_DEVELOPERS)
-            dialog.add_credit_section("Developed by", APP_DEVELOPERS)
-            dialog.set_website(APP_WEBSITE)
-            dialog.set_website_label("Project homepage")
-            dialog.set_license_type(Gtk.License.GPL_3_0_ONLY)
-            dialog.present()
+            about = Adw.AboutDialog(
+                application_name=APP_NAME,
+                application_icon=APP_ICON_NAME,
+                developer_name=APP_DEVELOPERS[0] if APP_DEVELOPERS else "",
+                website=APP_WEBSITE,
+                issue_url=f"{APP_WEBSITE}/issues",
+                license_type=Gtk.License.GPL_3_0_ONLY,
+                comments="Create and manage on-demand SMB mounts.",
+            )
+            about.set_developers(APP_DEVELOPERS)
+            about.present(self)
 
         def open_mount_folder(self, record: ManagedMount) -> None:
             if not record.mount_point.exists():
