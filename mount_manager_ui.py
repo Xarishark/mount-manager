@@ -254,40 +254,6 @@ def run_gui() -> int:
             self.main_window.refresh()
             self.main_window.show_toast(f"{share} will mount when accessed.")
 
-    class MessageWindow(Gtk.Window):
-        def __init__(self, parent: Gtk.Window, title: str, message: str) -> None:
-            super().__init__(title=title)
-            self.set_transient_for(parent)
-            self.set_modal(True)
-            self.set_default_size(420, -1)
-            self.set_resizable(False)
-
-            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
-            root.set_margin_top(18)
-            root.set_margin_bottom(18)
-            root.set_margin_start(18)
-            root.set_margin_end(18)
-            self.set_child(root)
-
-            heading = Gtk.Label(label=title)
-            heading.add_css_class("title-3")
-            heading.set_xalign(0)
-            root.append(heading)
-
-            label = Gtk.Label(label=message)
-            label.set_wrap(True)
-            label.set_xalign(0)
-            root.append(label)
-
-            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            buttons.set_halign(Gtk.Align.END)
-            root.append(buttons)
-
-            ok_button = Gtk.Button(label="OK")
-            ok_button.add_css_class("suggested-action")
-            ok_button.connect("clicked", lambda _button: self.close())
-            buttons.append(ok_button)
-
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
             super().__init__(application=app, title=APP_NAME)
@@ -464,26 +430,24 @@ def run_gui() -> int:
 
         def open_mount_folder(self, record: ManagedMount) -> None:
             if not record.mount_point.exists():
-                MessageWindow(self, "Open Folder Failed", f"Mount folder does not exist: {record.mount_point}").present()
+                self.show_toast(f"Mount folder does not exist: {record.mount_point}")
                 return
-
             try:
                 run_command(["xdg-open", str(record.mount_point)])
             except MountManagerError as exc:
-                MessageWindow(self, "Open Folder Failed", f"Could not open {record.mount_point}: {exc}").present()
+                self.show_toast(f"Could not open {record.mount_point}: {exc}")
 
         def upgrade_mount(self, record: ManagedMount) -> None:
             try:
                 request_helper_upgrade(record)
             except MountManagerError as exc:
-                MessageWindow(self, "Upgrade Failed", str(exc)).present()
+                self.show_toast(f"Upgrade failed: {exc}")
                 return
             except Exception as exc:
-                MessageWindow(self, "Upgrade Failed", f"Unexpected error: {exc}").present()
+                self.show_toast(f"Upgrade failed: {exc}")
                 return
-
             self.refresh()
-            MessageWindow(self, "SMB Mount Upgraded", f"{record.source} will mount when accessed.").present()
+            self.show_toast(f"{record.source} upgraded; will mount when accessed.")
 
         def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
             enabled = switch.get_active()
@@ -491,9 +455,9 @@ def run_gui() -> int:
             try:
                 request_helper_set_enabled(record, enabled)
             except MountManagerError as exc:
-                MessageWindow(self, "Mount Toggle Failed", str(exc)).present()
+                self.show_toast(f"Toggle failed: {exc}")
             except Exception as exc:
-                MessageWindow(self, "Mount Toggle Failed", f"Unexpected error: {exc}").present()
+                self.show_toast(f"Toggle failed: {exc}")
             finally:
                 self.refresh()
 
