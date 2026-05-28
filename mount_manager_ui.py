@@ -456,7 +456,6 @@ def run_gui() -> int:
             about = Adw.AboutDialog(
                 application_name=APP_NAME,
                 application_icon=APP_ICON_NAME,
-                developer_name=APP_DEVELOPERS[0] if APP_DEVELOPERS else "",
                 website=APP_WEBSITE,
                 issue_url=f"{APP_WEBSITE}/issues",
                 license_type=Gtk.License.GPL_3_0_ONLY,
