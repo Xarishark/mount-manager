@@ -32,7 +32,6 @@ APP_ID = "io.github.xarishark.mount-manager"
 APP_CREATOR = "Zacharias Xenakis (Xarishark)"
 APP_DEVELOPERS = [APP_CREATOR]
 APP_WEBSITE = "https://github.com/Xarishark/mount-manager"
-COLOR_SCHEME_ENV = "MOUNT_MANAGER_COLOR_SCHEME"
 APP_ICON_NAME = APP_ID
 
 MANAGED_ROOT = Path("/etc/mount-manager")
@@ -920,41 +919,6 @@ def load_displayed_mounts() -> list[DisplayedMount]:
         displayed.append(mount)
 
     return displayed
-
-
-def detect_color_scheme(env: dict[str, str] | None = None) -> str:
-    if env is None:
-        env = os.environ
-
-    explicit = env.get(COLOR_SCHEME_ENV, "").strip().lower()
-    if explicit in {"dark", "light"}:
-        return explicit
-
-    gtk_theme = env.get("GTK_THEME", "").lower()
-    if "dark" in gtk_theme:
-        return "dark"
-    if "light" in gtk_theme:
-        return "light"
-
-    try:
-        result = subprocess.run(
-            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
-            check=False,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=2,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return "light"
-
-    if result.returncode != 0:
-        return "light"
-
-    value = result.stdout.strip().strip("'\"").lower()
-    if value == "prefer-dark":
-        return "dark"
-    return "light"
 
 
 def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any]:
