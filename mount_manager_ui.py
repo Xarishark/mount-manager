@@ -91,164 +91,161 @@ def run_gui() -> int:
         return 1
     apply_style_manager()
 
-    class AddShareWindow(Gtk.Window):
-        def __init__(self, parent: Gtk.Window, on_complete: Any) -> None:
-            super().__init__(title="Add SMB Share")
-            self.set_transient_for(parent)
-            self.set_modal(True)
-            self.set_default_size(560, -1)
-            self.set_resizable(False)
-            self.on_complete = on_complete
+    class AddShareDialog(Adw.Dialog):
+        def __init__(self, main_window: "MainWindow") -> None:
+            super().__init__()
+            self.set_title("Add SMB Share")
+            self.set_content_width(420)
+            self.main_window = main_window
             self.share_path: SharePath | None = None
+            self._debounce_id: int = 0
 
-            root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
-            root.set_margin_top(18)
-            root.set_margin_bottom(18)
-            root.set_margin_start(18)
-            root.set_margin_end(18)
-            self.set_child(root)
+            self.cancel_button = Gtk.Button(label="Cancel")
+            self.cancel_button.connect("clicked", lambda _b: self.close())
 
-            self.path_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            root.append(self.path_box)
+            self.add_button = Gtk.Button(label="Add")
+            self.add_button.add_css_class("suggested-action")
+            self.add_button.set_sensitive(False)
+            self.add_button.connect("clicked", lambda _b: self._on_add_clicked())
 
-            path_label = Gtk.Label(label="Please add share path")
-            path_label.set_xalign(0)
-            self.path_box.append(path_label)
+            header = Adw.HeaderBar()
+            header.set_show_start_title_buttons(False)
+            header.set_show_end_title_buttons(False)
+            header.pack_start(self.cancel_button)
+            header.pack_end(self.add_button)
 
-            self.path_entry = Gtk.Entry()
-            self.path_entry.set_placeholder_text("//hostname/share")
-            self.path_entry.set_hexpand(True)
-            self.path_entry.connect("activate", lambda _entry: self.on_next_clicked())
-            self.path_box.append(self.path_entry)
+            self.banner = Adw.Banner()
+            self.banner.set_revealed(False)
 
-            path_help = Gtk.Label(label="Example: //192.168.1.2/sharename or //hostname/sharename")
-            path_help.set_xalign(0)
-            path_help.add_css_class("dim-label")
-            self.path_box.append(path_help)
+            page = Adw.PreferencesPage()
 
-            self.credentials_box = Gtk.Grid(column_spacing=12, row_spacing=10)
-            self.credentials_box.set_visible(False)
-            root.append(self.credentials_box)
+            share_group = Adw.PreferencesGroup()
+            share_group.set_title("Share")
+            page.add(share_group)
 
-            host_status_label = Gtk.Label(label="")
-            host_status_label.set_xalign(0)
-            host_status_label.add_css_class("success")
-            self.credentials_box.attach(host_status_label, 0, 0, 2, 1)
-            self.host_status_label = host_status_label
+            self.path_row = Adw.EntryRow()
+            self.path_row.set_title("Share path")
+            self.path_row.set_tooltip_text(
+                "Example: //192.168.1.2/sharename or //hostname/sharename"
+            )
+            self.path_row.connect("changed", lambda _r: self._on_path_changed())
+            share_group.add(self.path_row)
 
-            user_label = Gtk.Label(label="Username")
-            user_label.set_xalign(0)
-            self.credentials_box.attach(user_label, 0, 1, 1, 1)
+            self.host_spinner = Gtk.Spinner()
+            self.host_spinner.set_valign(Gtk.Align.CENTER)
+            self.host_spinner.set_visible(False)
+            self.path_row.add_suffix(self.host_spinner)
 
-            self.user_entry = Gtk.Entry()
-            self.user_entry.set_hexpand(True)
-            self.user_entry.connect("activate", lambda _entry: self.password_entry.grab_focus())
-            self.credentials_box.attach(self.user_entry, 1, 1, 1, 1)
+            self.host_status_icon = Gtk.Image()
+            self.host_status_icon.set_valign(Gtk.Align.CENTER)
+            self.host_status_icon.set_visible(False)
+            self.path_row.add_suffix(self.host_status_icon)
 
-            password_label = Gtk.Label(label="Password")
-            password_label.set_xalign(0)
-            self.credentials_box.attach(password_label, 0, 2, 1, 1)
+            self.credentials_group = Adw.PreferencesGroup()
+            self.credentials_group.set_title("Credentials")
+            self.credentials_group.set_sensitive(False)
+            page.add(self.credentials_group)
 
-            self.password_entry = Gtk.PasswordEntry()
-            self.password_entry.set_hexpand(True)
-            self.password_entry.connect("activate", lambda _entry: self.on_next_clicked())
-            self.credentials_box.attach(self.password_entry, 1, 2, 1, 1)
+            self.user_row = Adw.EntryRow()
+            self.user_row.set_title("Username")
+            self.user_row.connect("changed", lambda _r: self._update_add_sensitive())
+            self.credentials_group.add(self.user_row)
 
-            self.status_label = Gtk.Label()
-            self.status_label.set_xalign(0)
-            self.status_label.set_wrap(True)
-            self.status_label.add_css_class("dim-label")
-            self.status_label.set_visible(False)
-            root.append(self.status_label)
+            self.password_row = Adw.PasswordEntryRow()
+            self.password_row.set_title("Password")
+            self.password_row.connect("changed", lambda _r: self._update_add_sensitive())
+            self.credentials_group.add(self.password_row)
 
-            buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            buttons.set_halign(Gtk.Align.END)
-            root.append(buttons)
+            body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            body.append(self.banner)
+            body.append(page)
 
-            cancel_button = Gtk.Button(label="Cancel")
-            cancel_button.connect("clicked", lambda _button: self.close())
-            buttons.append(cancel_button)
+            toolbar = Adw.ToolbarView()
+            toolbar.add_top_bar(header)
+            toolbar.set_content(body)
+            self.set_child(toolbar)
 
-            self.back_button = Gtk.Button(label="Back")
-            self.back_button.set_visible(False)
-            self.back_button.connect("clicked", lambda _button: self.show_path_step())
-            buttons.append(self.back_button)
+        def _show_banner(self, message: str) -> None:
+            self.banner.set_title(message)
+            self.banner.set_revealed(True)
 
-            self.next_button = Gtk.Button(label="Check host")
-            self.next_button.add_css_class("suggested-action")
-            self.next_button.connect("clicked", lambda _button: self.on_next_clicked())
-            buttons.append(self.next_button)
+        def _hide_banner(self) -> None:
+            self.banner.set_revealed(False)
 
-            self.path_entry.grab_focus()
-
-        def set_status(self, message: str, css_class: str) -> None:
-            self.status_label.remove_css_class("error")
-            self.status_label.remove_css_class("success")
-            self.status_label.add_css_class(css_class)
-            self.status_label.set_text(message)
-            self.status_label.set_visible(True)
-
-        def show_path_step(self) -> None:
-            self.share_path = None
-            self.path_entry.set_sensitive(True)
-            self.path_box.set_visible(True)
-            self.credentials_box.set_visible(False)
-            self.back_button.set_visible(False)
-            self.next_button.set_label("Check host")
-            self.status_label.set_visible(False)
-            self.path_entry.grab_focus()
-
-        def show_credentials_step(self, share_path: SharePath) -> None:
-            self.share_path = share_path
-            self.path_entry.set_sensitive(False)
-            self.path_box.set_visible(True)
-            self.credentials_box.set_visible(True)
-            self.host_status_label.set_text("Host is reachable. Please enter credentials.")
-            self.back_button.set_visible(True)
-            self.next_button.set_label("Create")
-            self.status_label.set_visible(False)
-            self.user_entry.grab_focus()
-
-        def on_next_clicked(self) -> None:
-            if self.share_path is None:
-                self.check_host()
+        def _set_host_status(self, *, ok: bool | None, message: str) -> None:
+            self.host_spinner.set_visible(False)
+            self.host_spinner.stop()
+            if ok is None:
+                self.host_status_icon.set_visible(False)
+                self.path_row.set_title("Share path")
+                return
+            if ok:
+                self.host_status_icon.set_from_icon_name("emblem-ok-symbolic")
             else:
-                self.create_share()
+                self.host_status_icon.set_from_icon_name("dialog-error-symbolic")
+            self.host_status_icon.set_visible(True)
+            self.host_status_icon.set_tooltip_text(message)
 
-        def check_host(self) -> None:
+        def _on_path_changed(self) -> None:
+            self.share_path = None
+            self.credentials_group.set_sensitive(False)
+            self._update_add_sensitive()
+            self._hide_banner()
+            self._set_host_status(ok=None, message="")
+            if self._debounce_id:
+                GLib.source_remove(self._debounce_id)
+                self._debounce_id = 0
+            text = self.path_row.get_text().strip()
+            if not text:
+                return
+            self._debounce_id = GLib.timeout_add(300, self._run_host_check)
+
+        def _run_host_check(self) -> bool:
+            self._debounce_id = 0
+            self.host_spinner.set_visible(True)
+            self.host_spinner.start()
             try:
-                share_path = check_smb_host_reachable(self.path_entry.get_text())
+                share_path = check_smb_host_reachable(self.path_row.get_text())
             except MountManagerError as exc:
-                self.set_status(str(exc), "error")
-                return
+                self._set_host_status(ok=False, message=str(exc))
+                return False
             except Exception as exc:
-                self.set_status(f"Unexpected error: {exc}", "error")
-                return
+                self._set_host_status(ok=False, message=f"Unexpected error: {exc}")
+                return False
 
-            self.show_credentials_step(share_path)
+            self.share_path = share_path
+            self._set_host_status(ok=True, message="Host is reachable")
+            self.credentials_group.set_sensitive(True)
+            self._update_add_sensitive()
+            return False  # don't repeat the timeout
 
-        def create_share(self) -> None:
+        def _update_add_sensitive(self) -> None:
+            ready = (
+                self.share_path is not None
+                and bool(self.user_row.get_text().strip())
+                and bool(self.password_row.get_text())
+            )
+            self.add_button.set_sensitive(ready)
+
+        def _on_add_clicked(self) -> None:
             if self.share_path is None:
-                self.set_status("Check the share path before entering credentials.", "error")
                 return
-
             share = self.share_path.source
-            username = self.user_entry.get_text()
-            password = self.password_entry.get_text()
-
+            username = self.user_row.get_text()
+            password = self.password_row.get_text()
             try:
                 validate_credentials(username, password)
-                self.set_status("Creating encrypted on-demand mount...", "success")
                 request_helper_create(share, username, password)
             except MountManagerError as exc:
-                self.set_status(str(exc), "error")
+                self._show_banner(str(exc))
                 return
             except Exception as exc:
-                self.set_status(f"Unexpected error: {exc}", "error")
+                self._show_banner(f"Unexpected error: {exc}")
                 return
 
             self.close()
-            self.on_complete(share)
+            self.main_window.refresh()
+            self.main_window.show_toast(f"{share} will mount when accessed.")
 
     class MessageWindow(Gtk.Window):
         def __init__(self, parent: Gtk.Window, title: str, message: str) -> None:
@@ -506,7 +503,7 @@ def run_gui() -> int:
             return row
 
         def show_add_dialog(self) -> None:
-            AddShareWindow(self, self.mount_created).present()
+            AddShareDialog(self).present(self)
 
         def show_about_dialog(self) -> None:
             dialog = Gtk.AboutDialog()
@@ -521,10 +518,6 @@ def run_gui() -> int:
             dialog.set_website_label("Project homepage")
             dialog.set_license_type(Gtk.License.GPL_3_0_ONLY)
             dialog.present()
-
-        def mount_created(self, share: str) -> None:
-            self.refresh()
-            MessageWindow(self, "SMB Mount Created", f"{share} will mount when accessed.").present()
 
         def open_mount_folder(self, record: ManagedMount) -> None:
             if not record.mount_point.exists():
