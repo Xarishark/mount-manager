@@ -24,7 +24,7 @@ Credentials and app metadata are stored under:
 systemd 258 or newer with `systemd-creds` available. The app refuses to start
 on older systems.
 
-libadwaita 1.5 or newer. The app refuses to start on older versions.
+libadwaita 1.8 or newer. The app refuses to start on older versions.
 
 Credentials are always stored encrypted via `systemd-creds` and decrypted by
 systemd at unit start, exposed to `mount.cifs` through `LoadCredentialEncrypted=`.

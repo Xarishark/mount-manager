@@ -49,8 +49,8 @@ CREDENTIAL_NAME = "smbcreds"
 # Mount-unit credentials (LoadCredentialEncrypted=) require this systemd version.
 MIN_SYSTEMD_VERSION = 258
 
-# Adw.Dialog and Adw.AlertDialog require libadwaita 1.5 or newer.
-MIN_LIBADWAITA_VERSION: tuple[int, int] = (1, 5)
+# Adw.ShortcutsDialog and Adw.Spinner require libadwaita 1.8 or newer.
+MIN_LIBADWAITA_VERSION: tuple[int, int] = (1, 8)
 
 
 def _libadwaita_supports(major: int, minor: int) -> bool:
