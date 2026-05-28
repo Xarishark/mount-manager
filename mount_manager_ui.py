@@ -59,6 +59,11 @@ def apply_style_manager() -> None:
     Gtk.Window.set_default_icon_name(APP_ICON_NAME)
 
 
+def mount_status_line(mount: DisplayedMount) -> str:
+    """Build the AdwActionRow subtitle for a mount: ``<mount_point> · <status>``."""
+    return f"{mount.mount_point} · {mount.status}"
+
+
 def run_gui() -> int:
     ensure_libadwaita_supported()
     if not Gtk.init_check():
