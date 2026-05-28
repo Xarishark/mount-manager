@@ -16,7 +16,16 @@ gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
-from gi.repository import Adw, Gdk, Gio, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
+
+
+def GLib_markup_escape(text: str) -> str:
+    """Escape Pango markup characters in row titles/subtitles."""
+    return GLib.markup_escape_text(text, -1)
+
+
+def GLib_VariantType(spec: str) -> GLib.VariantType:
+    return GLib.VariantType.new(spec)
 
 from mount_manager import (
     APP_DEVELOPERS,
@@ -380,20 +389,14 @@ def run_gui() -> int:
             self.empty_label.add_css_class("dim-label")
             self.empty_label.set_margin_top(32)
 
-            self.list_box = Gtk.ListBox()
-            self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
-            self.list_box.add_css_class("boxed-list")
+            self.preferences_page = Adw.PreferencesPage()
+            self.preferences_page.set_vexpand(True)
 
-            scroller = Gtk.ScrolledWindow()
-            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-            scroller.set_child(self.list_box)
-            scroller.set_vexpand(True)
-            scroller.set_margin_top(16)
-            scroller.set_margin_bottom(16)
-            scroller.set_margin_start(16)
-            scroller.set_margin_end(16)
+            self.mount_group = Adw.PreferencesGroup()
+            self.mount_group.set_title("SMB Shares")
+            self.preferences_page.add(self.mount_group)
 
-            self.content_box.append(scroller)
+            self.content_box.append(self.preferences_page)
             self.content_box.append(self.empty_label)
 
             toolbar_view = Adw.ToolbarView()
@@ -407,92 +410,93 @@ def run_gui() -> int:
             self.toast_overlay.add_toast(Adw.Toast(title=message))
 
         def refresh(self) -> None:
-            while True:
-                row = self.list_box.get_first_child()
-                if row is None:
-                    break
-                self.list_box.remove(row)
+            rows_to_remove = []
+            row = self.mount_group.get_first_child()
+            while row is not None:
+                rows_to_remove.append(row)
+                row = row.get_next_sibling()
+            for row in rows_to_remove:
+                if isinstance(row, Adw.ActionRow):
+                    self.mount_group.remove(row)
 
             mounts = load_displayed_mounts()
             self.empty_label.set_visible(not mounts)
-            self.list_box.set_visible(bool(mounts))
+            self.preferences_page.set_visible(bool(mounts))
 
             for mount in mounts:
-                self.list_box.append(self.row_for(mount))
+                self.mount_group.add(self.row_for(mount))
 
-        def row_for(self, mount: DisplayedMount) -> Gtk.ListBoxRow:
-            row = Gtk.ListBoxRow()
-            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-            box.set_margin_top(10)
-            box.set_margin_bottom(10)
-            box.set_margin_start(12)
-            box.set_margin_end(12)
+        def row_for(self, mount: DisplayedMount) -> Adw.ActionRow:
+            row = Adw.ActionRow()
+            row.set_title(GLib_markup_escape(mount.source))
+            row.set_subtitle(GLib_markup_escape(mount_status_line(mount)))
+
+            if not mount.managed or mount.managed_record is None:
+                not_managed_label = Gtk.Label(label="Not managed")
+                not_managed_label.add_css_class("dim-label")
+                not_managed_label.set_valign(Gtk.Align.CENTER)
+                row.add_suffix(not_managed_label)
+                return row
+
+            record = mount.managed_record
 
             mount_switch = Gtk.Switch()
             mount_switch.set_valign(Gtk.Align.CENTER)
             mount_switch.set_active(mount.active)
-            mount_switch.set_sensitive(mount.managed and not mount.needs_upgrade)
-            if mount.managed and mount.managed_record is not None:
-                if mount.needs_upgrade:
-                    mount_switch.set_tooltip_text("Upgrade this older mount before enabling it")
-                else:
-                    mount_switch.set_tooltip_text("Enable or disable on-demand access for this managed mount")
-                    mount_switch.connect(
-                        "notify::active",
-                        lambda switch, _param: self.toggle_mount(mount.managed_record, switch),
-                    )
+            mount_switch.set_sensitive(not mount.needs_upgrade)
+            if mount.needs_upgrade:
+                mount_switch.set_tooltip_text("Upgrade this older mount before enabling it")
             else:
-                mount_switch.set_tooltip_text("This SMB mount is not managed by this app")
+                mount_switch.set_tooltip_text(
+                    "Enable or disable on-demand access for this managed mount"
+                )
+                mount_switch.connect(
+                    "notify::active",
+                    lambda switch, _param: self.toggle_mount(record, switch),
+                )
+            row.add_suffix(mount_switch)
 
-            text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
-            text_box.set_hexpand(True)
-
-            source_label = Gtk.Label(label=mount.source)
-            source_label.set_xalign(0)
-            source_label.add_css_class("heading")
-            source_label.set_ellipsize(Pango.EllipsizeMode.END)
-
-            detail = f"{mount.mount_point}  -  {mount.status}"
-            detail_label = Gtk.Label(label=detail)
-            detail_label.set_xalign(0)
-            detail_label.add_css_class("dim-label")
-            detail_label.set_ellipsize(Pango.EllipsizeMode.END)
-
-            text_box.append(source_label)
-            text_box.append(detail_label)
-
-            box.append(mount_switch)
-            box.append(text_box)
-
-            if mount.managed and mount.managed_record is not None:
-                if mount.needs_upgrade:
-                    upgrade_button = Gtk.Button(label="Upgrade")
-                    upgrade_button.set_tooltip_text("Upgrade mount units using the existing encrypted credentials")
-                    upgrade_button.add_css_class("upgrade-action")
-                    upgrade_button.connect("clicked", lambda _button: self.upgrade_mount(mount.managed_record))
-                    box.append(upgrade_button)
-                else:
-                    open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
-                    open_button.set_sensitive(mount.openable)
-                    open_button.set_tooltip_text(
-                        "Open mount folder" if mount.openable else "Enable on-demand access to open its folder"
-                    )
-                    open_button.connect("clicked", lambda _button: self.open_mount_folder(mount.managed_record))
-                    box.append(open_button)
-
-                delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
-                delete_button.set_tooltip_text("Delete mount")
-                delete_button.add_css_class("destructive-action")
-                delete_button.connect("clicked", lambda _button: self.confirm_delete(mount.managed_record))
-
-                box.append(delete_button)
+            if mount.needs_upgrade:
+                upgrade_button = Gtk.Button(label="Upgrade")
+                upgrade_button.set_valign(Gtk.Align.CENTER)
+                upgrade_button.set_tooltip_text(
+                    "Upgrade mount units using the existing encrypted credentials"
+                )
+                upgrade_button.add_css_class("suggested-action")
+                upgrade_button.connect("clicked", lambda _b: self.upgrade_mount(record))
+                row.add_suffix(upgrade_button)
             else:
-                not_managed_label = Gtk.Label(label="Not managed")
-                not_managed_label.add_css_class("dim-label")
-                not_managed_label.set_valign(Gtk.Align.CENTER)
-                box.append(not_managed_label)
+                open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
+                open_button.set_valign(Gtk.Align.CENTER)
+                open_button.add_css_class("flat")
+                open_button.set_sensitive(mount.openable)
+                open_button.set_tooltip_text(
+                    "Open mount folder"
+                    if mount.openable
+                    else "Enable on-demand access to open its folder"
+                )
+                open_button.connect("clicked", lambda _b: self.open_mount_folder(record))
+                row.add_suffix(open_button)
 
-            row.set_child(box)
+            menu = Gio.Menu()
+            menu.append("Delete\u2026", f"row.delete::{record.manager_id}")
+
+            row_action_group = Gio.SimpleActionGroup()
+            delete_action = Gio.SimpleAction.new("delete", GLib_VariantType("s"))
+            delete_action.connect(
+                "activate", lambda _a, _p, r=record: self.confirm_delete(r)
+            )
+            row_action_group.add_action(delete_action)
+            row.insert_action_group("row", row_action_group)
+
+            menu_button = Gtk.MenuButton()
+            menu_button.set_valign(Gtk.Align.CENTER)
+            menu_button.set_icon_name("view-more-symbolic")
+            menu_button.add_css_class("flat")
+            menu_button.set_menu_model(menu)
+            menu_button.set_tooltip_text("More actions")
+            row.add_suffix(menu_button)
+
             return row
 
         def show_add_dialog(self) -> None:
