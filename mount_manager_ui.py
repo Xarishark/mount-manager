@@ -291,7 +291,7 @@ def run_gui() -> int:
 
             self.close()
             self.main_window.refresh()
-            self.main_window.show_toast(f"{share} added.")
+            self.main_window.show_toast(f"{share} added")
 
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
@@ -308,14 +308,14 @@ def run_gui() -> int:
 
             menu_button = Gtk.MenuButton(icon_name="open-menu-symbolic")
             menu_button.set_menu_model(menu)
-            menu_button.set_tooltip_text("Main menu")
+            menu_button.set_tooltip_text("Primary menu")
 
             refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
             refresh_button.set_tooltip_text("Refresh")
             refresh_button.connect("clicked", lambda _b: self.refresh())
 
             add_button = Gtk.Button(label="Add Share")
-            add_button.set_tooltip_text("Add share")
+            add_button.set_tooltip_text("Mount a new SMB share")
             add_button.add_css_class("suggested-action")
             add_button.connect("clicked", lambda _b: self.show_add_dialog())
 
@@ -333,7 +333,7 @@ def run_gui() -> int:
             self.empty_page = Adw.StatusPage()
             self.empty_page.set_icon_name("folder-remote-symbolic")
             self.empty_page.set_title("No SMB shares")
-            self.empty_page.set_description("Click <i>Add Share</i> to mount one.")
+            self.empty_page.set_description('Click "Add Share" to mount one')
             self.empty_page.set_vexpand(True)
 
             empty_action = Gtk.Button(label="Add Share")
@@ -347,7 +347,6 @@ def run_gui() -> int:
             self.preferences_page.set_vexpand(True)
 
             self.mount_group = Adw.PreferencesGroup()
-            self.mount_group.set_title("SMB Shares")
             self.preferences_page.add(self.mount_group)
 
             self.content_box.append(self.preferences_page)
@@ -485,7 +484,7 @@ def run_gui() -> int:
                 self.show_toast(f"Upgrade failed: {exc}")
                 return
             self.refresh()
-            self.show_toast(f"{record.source} upgraded.")
+            self.show_toast(f"{record.source} upgraded")
 
         def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
             enabled = switch.get_active()
@@ -508,7 +507,7 @@ def run_gui() -> int:
                 ),
             )
             alert.add_response("cancel", "Cancel")
-            alert.add_response("delete", "Delete")
+            alert.add_response("delete", "Delete Share")
             alert.set_response_appearance(
                 "delete", Adw.ResponseAppearance.DESTRUCTIVE
             )
@@ -531,7 +530,7 @@ def run_gui() -> int:
                 self.show_toast(f"Delete failed: {exc}")
                 return
             self.refresh()
-            self.show_toast(f"{record.source} removed.")
+            self.show_toast(f"{record.source} removed")
 
     class MountManagerApplication(Adw.Application):
         def __init__(self) -> None:
