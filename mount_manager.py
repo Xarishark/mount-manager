@@ -9,8 +9,6 @@ The GUI runs as the desktop user. Create/delete actions call a hidden helper
 mode through pkexec so only the system-changing work runs as root.
 """
 
-from __future__ import annotations
-
 import argparse
 import dataclasses
 import hashlib
@@ -53,7 +51,7 @@ MIN_SYSTEMD_VERSION = 258
 MIN_LIBADWAITA_VERSION: tuple[int, int] = (1, 8)
 
 
-def _libadwaita_supports(major: int, minor: int) -> bool:
+def libadwaita_supports(major: int, minor: int) -> bool:
     """Return True if the given libadwaita (major, minor) meets the app's minimum."""
     return (major, minor) >= MIN_LIBADWAITA_VERSION
 
