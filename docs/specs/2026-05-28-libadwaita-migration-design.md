@@ -115,11 +115,13 @@ hidden and replaced by an `Adw.StatusPage`:
 - Header: `Adw.HeaderBar` with `Cancel` (start) and a suggested-action `Add`
   (end). `Add` is insensitive until the host check has succeeded and both
   credential fields are non-empty.
-- Body: `Adw.Clamp` → `Adw.PreferencesPage` with two
-  `Adw.PreferencesGroup`s:
+- Body: `Adw.Clamp` wrapping a vertical `Gtk.Box` of two
+  `Adw.PreferencesGroup`s (not `Adw.PreferencesPage`, whose internal
+  `ScrolledWindow` would pin the dialog at a fixed height and prevent it from
+  growing when the credentials group is revealed):
   - **Share** group:
-    - `Adw.EntryRow` titled "Share path". Placeholder example:
-      `//192.168.1.2/sharename or //hostname/sharename`.
+    - `Adw.EntryRow` titled "Share path". The group description carries the
+      example: `//192.168.1.2/sharename or //hostname/sharename`.
     - The host check (currently a separate "Check host" button) runs
       automatically after a short typing debounce once the entered path
       parses. A spinner is shown in the row's apply / trailing area while the
@@ -128,7 +130,7 @@ hidden and replaced by an `Adw.StatusPage`:
   - **Credentials** group:
     - `Adw.EntryRow` titled "Username".
     - `Adw.PasswordEntryRow` titled "Password".
-    - The group's `sensitive` property is bound to "host check succeeded".
+    - The group's `visible` property is bound to "host check succeeded".
 - Submitting `Add` runs the existing test-mount → helper-create flow on a
   worker thread (today's logic is preserved). On success the dialog closes,
   the main window's list refreshes, and a toast is shown. On failure an

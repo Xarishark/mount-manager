@@ -40,7 +40,10 @@ The application is split across two files:
 - The Add Share flow is a single-page progressive-reveal `Adw.Dialog` with a 300ms
   debounced host check (`GLib.timeout_add` + `GLib.source_remove`). Any pending timer
   **must** be cancelled on the dialog's `"closed"` signal to avoid firing callbacks on
-  destroyed widgets.
+  destroyed widgets. The dialog body is an `Adw.Clamp` wrapping a vertical `Gtk.Box`
+  of `Adw.PreferencesGroup`s — **not** `Adw.PreferencesPage`, whose internal
+  `ScrolledWindow` would fix the dialog height and hide content revealed at runtime
+  (e.g. the credentials group) behind a scrollbar.
 - Always escape user-controlled strings (mount paths, statuses) with
   `GLib.markup_escape_text` before passing them to widgets that render Pango markup.
 - About box uses `Adw.AboutDialog`.

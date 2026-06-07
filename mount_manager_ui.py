@@ -41,10 +41,6 @@ def GLib_markup_escape(text: str) -> str:
     return GLib.markup_escape_text(text, -1)
 
 
-def GLib_VariantType(spec: str) -> GLib.VariantType:
-    return GLib.VariantType.new(spec)
-
-
 def ensure_libadwaita_supported() -> None:
     """Print an error and raise SystemExit if libadwaita is too old."""
     if not libadwaita_supports(Adw.MAJOR_VERSION, Adw.MINOR_VERSION):
@@ -86,21 +82,37 @@ def run_gui() -> int:
         return 1
     apply_style_manager()
 
+    def bind_action(
+        owner,
+        app,
+        qualified_name: str,
+        callback,
+        accels: tuple[str, ...] = (),
+    ) -> None:
+        """Register a parameterless action on ``owner`` and wire its accelerators on ``app``.
+
+        ``qualified_name`` is the full action name (``"win.refresh"`` / ``"app.quit"``).
+        """
+        action = Gio.SimpleAction.new(qualified_name.split(".", 1)[1], None)
+        action.connect("activate", lambda _a, _p: callback())
+        owner.add_action(action)
+        if accels:
+            app.set_accels_for_action(qualified_name, list(accels))
+
     def build_shortcuts_dialog() -> Adw.ShortcutsDialog:
         """Construct the keyboard shortcuts dialog for the app."""
         dialog = Adw.ShortcutsDialog()
 
         general = Adw.ShortcutsSection(title="General")
-        general.add(Adw.ShortcutsItem(title="Add Share", action_name="win.add-share"))
-        general.add(Adw.ShortcutsItem(title="Refresh", action_name="win.refresh"))
-        general.add(
-            Adw.ShortcutsItem(title="Primary Menu", action_name="win.show-menu")
-        )
-        general.add(
-            Adw.ShortcutsItem(title="Keyboard Shortcuts", action_name="app.shortcuts")
-        )
-        general.add(Adw.ShortcutsItem(title="Close Window", action_name="win.close"))
-        general.add(Adw.ShortcutsItem(title="Quit", action_name="app.quit"))
+        for title, action_name in (
+            ("Add Share", "win.add-share"),
+            ("Refresh", "win.refresh"),
+            ("Primary Menu", "win.show-menu"),
+            ("Keyboard Shortcuts", "app.shortcuts"),
+            ("Close Window", "win.close"),
+            ("Quit", "app.quit"),
+        ):
+            general.add(Adw.ShortcutsItem(title=title, action_name=action_name))
 
         dialog.add(general)
         return dialog
@@ -124,23 +136,28 @@ def run_gui() -> int:
             self.add_button.connect("clicked", lambda _b: self._on_add_clicked())
 
             header = Adw.HeaderBar()
+            header.set_show_end_title_buttons(False)
             header.pack_start(self.cancel_button)
             header.pack_end(self.add_button)
 
             self.banner = Adw.Banner()
             self.banner.set_revealed(False)
 
-            page = Adw.PreferencesPage()
+            groups_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+            groups_box.set_margin_top(24)
+            groups_box.set_margin_bottom(24)
+            groups_box.set_margin_start(12)
+            groups_box.set_margin_end(12)
 
             share_group = Adw.PreferencesGroup()
             share_group.set_title("Share")
-            page.add(share_group)
+            share_group.set_description(
+                "Example: //192.168.1.2/sharename or //hostname/sharename"
+            )
+            groups_box.append(share_group)
 
             self.path_row = Adw.EntryRow()
             self.path_row.set_title("Share path")
-            self.path_row.set_tooltip_text(
-                "Example: //192.168.1.2/sharename or //hostname/sharename"
-            )
             self.path_row.connect("changed", lambda _r: self._on_path_changed())
             share_group.add(self.path_row)
 
@@ -156,8 +173,8 @@ def run_gui() -> int:
 
             self.credentials_group = Adw.PreferencesGroup()
             self.credentials_group.set_title("Credentials")
-            self.credentials_group.set_sensitive(False)
-            page.add(self.credentials_group)
+            self.credentials_group.set_visible(False)
+            groups_box.append(self.credentials_group)
 
             self.user_row = Adw.EntryRow()
             self.user_row.set_title("Username")
@@ -171,9 +188,13 @@ def run_gui() -> int:
             )
             self.credentials_group.add(self.password_row)
 
+            clamp = Adw.Clamp()
+            clamp.set_maximum_size(600)
+            clamp.set_child(groups_box)
+
             body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             body.append(self.banner)
-            body.append(page)
+            body.append(clamp)
 
             toolbar = Adw.ToolbarView()
             toolbar.add_top_bar(header)
@@ -184,13 +205,16 @@ def run_gui() -> int:
             self.connect("closed", self._cleanup)
             self.connect("map", lambda _d: self.path_row.grab_focus())
 
-        def _cleanup(self, *_args) -> None:
+        def _cancel_pending_host_check(self) -> None:
             if self._cancellable is not None:
                 self._cancellable.cancel()
                 self._cancellable = None
             if self._debounce_id:
                 GLib.source_remove(self._debounce_id)
                 self._debounce_id = 0
+
+        def _cleanup(self, *_args) -> None:
+            self._cancel_pending_host_check()
 
         def _show_banner(self, message: str) -> None:
             self.banner.set_title(message)
@@ -206,24 +230,19 @@ def run_gui() -> int:
                 self.path_row.set_title("Share path")
                 return
             if ok:
-                self.host_status_icon.set_from_icon_name("checkmark-symbolic")
+                self.host_status_icon.set_from_icon_name("object-select-symbolic")
             else:
-                self.host_status_icon.set_from_icon_name("error-symbolic")
+                self.host_status_icon.set_from_icon_name("dialog-error-symbolic")
             self.host_status_icon.set_visible(True)
             self.host_status_icon.set_tooltip_text(message)
 
         def _on_path_changed(self) -> None:
             self.share_path = None
-            self.credentials_group.set_sensitive(False)
+            self.credentials_group.set_visible(False)
             self._update_add_sensitive()
             self._hide_banner()
             self._set_host_status(ok=None, message="")
-            if self._cancellable is not None:
-                self._cancellable.cancel()
-                self._cancellable = None
-            if self._debounce_id:
-                GLib.source_remove(self._debounce_id)
-                self._debounce_id = 0
+            self._cancel_pending_host_check()
             text = self.path_row.get_text().strip()
             if not text:
                 return
@@ -245,13 +264,12 @@ def run_gui() -> int:
 
         def _host_check_worker(self, cancellable: Gio.Cancellable, text: str) -> None:
             try:
-                share_path = check_smb_host_reachable(text)
-            except MountManagerError as exc:
-                result: tuple[SharePath | None, BaseException | None] = (None, exc)
+                result: tuple[SharePath | None, BaseException | None] = (
+                    check_smb_host_reachable(text),
+                    None,
+                )
             except Exception as exc:
                 result = (None, exc)
-            else:
-                result = (share_path, None)
             if cancellable.is_cancelled():
                 return
             GLib.idle_add(self._on_host_check_done, cancellable, result[0], result[1])
@@ -273,7 +291,7 @@ def run_gui() -> int:
                 return False
             self.share_path = share_path
             self._set_host_status(ok=True, message="Host is reachable")
-            self.credentials_group.set_sensitive(True)
+            self.credentials_group.set_visible(True)
             self._update_add_sensitive()
             return False
 
@@ -311,31 +329,11 @@ def run_gui() -> int:
             self.set_default_size(760, 480)
             self.set_icon_name(APP_ICON_NAME)
 
-            about_action = Gio.SimpleAction.new("about", None)
-            about_action.connect("activate", lambda _a, _p: self.show_about_dialog())
-            self.add_action(about_action)
-
-            close_action = Gio.SimpleAction.new("close", None)
-            close_action.connect("activate", lambda _a, _p: self.close())
-            self.add_action(close_action)
-            app.set_accels_for_action("win.close", ["<Primary>w"])
-
-            add_share_action = Gio.SimpleAction.new("add-share", None)
-            add_share_action.connect("activate", lambda _a, _p: self.show_add_dialog())
-            self.add_action(add_share_action)
-            app.set_accels_for_action("win.add-share", ["<Primary>n"])
-
-            refresh_action = Gio.SimpleAction.new("refresh", None)
-            refresh_action.connect("activate", lambda _a, _p: self.refresh())
-            self.add_action(refresh_action)
-            app.set_accels_for_action("win.refresh", ["<Primary>r"])
-
-            show_menu_action = Gio.SimpleAction.new("show-menu", None)
-            show_menu_action.connect(
-                "activate", lambda _a, _p: self._open_primary_menu()
-            )
-            self.add_action(show_menu_action)
-            app.set_accels_for_action("win.show-menu", ["F10"])
+            bind_action(self, app, "win.about", self.show_about_dialog)
+            bind_action(self, app, "win.close", self.close, ("<Primary>w",))
+            bind_action(self, app, "win.add-share", self.show_add_dialog, ("<Primary>n",))
+            bind_action(self, app, "win.refresh", self.refresh, ("<Primary>r",))
+            bind_action(self, app, "win.show-menu", self._open_primary_menu, ("F10",))
 
             menu = Gio.Menu()
             menu.append("Keyboard Shortcuts", "app.shortcuts")
@@ -349,13 +347,8 @@ def run_gui() -> int:
             refresh_button.set_tooltip_text("Refresh")
             refresh_button.set_action_name("win.refresh")
 
-            add_button_content = Adw.ButtonContent(
-                icon_name="list-add-symbolic",
-                label="Add Share",
-            )
-            add_button = Gtk.Button()
-            add_button.set_child(add_button_content)
-            add_button.set_tooltip_text("Mount a new SMB share")
+            add_button = Gtk.Button.new_from_icon_name("list-add-symbolic")
+            add_button.set_tooltip_text("Add SMB share")
             add_button.set_action_name("win.add-share")
 
             header = Adw.HeaderBar()
@@ -372,7 +365,6 @@ def run_gui() -> int:
             self.empty_page = Adw.StatusPage()
             self.empty_page.set_icon_name("network-server-symbolic")
             self.empty_page.set_title("No SMB shares")
-            self.empty_page.set_description('Click "Add Share" to mount one')
             self.empty_page.set_vexpand(True)
 
             empty_action = Gtk.Button(label="Add Share")
@@ -406,10 +398,7 @@ def run_gui() -> int:
             self.toast_overlay.add_toast(Adw.Toast(title=message))
 
         def refresh(self) -> None:
-            while True:
-                row = self.mount_group.get_row(0)
-                if row is None:
-                    break
+            while (row := self.mount_group.get_row(0)) is not None:
                 self.mount_group.remove(row)
 
             mounts = load_displayed_mounts()
@@ -479,7 +468,7 @@ def run_gui() -> int:
             menu.append("Delete\u2026", f"row.delete::{record.manager_id}")
 
             row_action_group = Gio.SimpleActionGroup()
-            delete_action = Gio.SimpleAction.new("delete", GLib_VariantType("s"))
+            delete_action = Gio.SimpleAction.new("delete", GLib.VariantType.new("s"))
             delete_action.connect(
                 "activate", lambda _a, _p, r=record: self.confirm_delete(r)
             )
@@ -530,29 +519,29 @@ def run_gui() -> int:
                     return
                 self.show_toast(f"Could not open folder: {exc.message}")
 
-        def upgrade_mount(self, record: ManagedMount) -> None:
+        def _run_helper_action(self, label: str, callback) -> bool:
+            """Invoke a privileged helper callback, toast on failure, return True on success."""
             try:
-                request_helper_upgrade(record)
-            except MountManagerError as exc:
-                self.show_toast(f"Upgrade failed: {exc}")
-                return
+                callback()
             except Exception as exc:
-                self.show_toast(f"Upgrade failed: {exc}")
-                return
-            self.refresh()
-            self.show_toast(f"{record.source} upgraded")
+                self.show_toast(f"{label} failed: {exc}")
+                return False
+            return True
+
+        def upgrade_mount(self, record: ManagedMount) -> None:
+            if self._run_helper_action(
+                "Upgrade", lambda: request_helper_upgrade(record)
+            ):
+                self.refresh()
+                self.show_toast(f"{record.source} upgraded")
 
         def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
             enabled = switch.get_active()
             switch.set_sensitive(False)
-            try:
-                request_helper_set_enabled(record, enabled)
-            except MountManagerError as exc:
-                self.show_toast(f"Toggle failed: {exc}")
-            except Exception as exc:
-                self.show_toast(f"Toggle failed: {exc}")
-            finally:
-                self.refresh()
+            self._run_helper_action(
+                "Toggle", lambda: request_helper_set_enabled(record, enabled)
+            )
+            self.refresh()
 
         def confirm_delete(self, record: ManagedMount) -> None:
             alert = Adw.AlertDialog(
@@ -575,16 +564,11 @@ def run_gui() -> int:
         ) -> None:
             if response != "delete":
                 return
-            try:
-                request_helper_delete(record)
-            except MountManagerError as exc:
-                self.show_toast(f"Delete failed: {exc}")
-                return
-            except Exception as exc:
-                self.show_toast(f"Delete failed: {exc}")
-                return
-            self.refresh()
-            self.show_toast(f"{record.source} removed")
+            if self._run_helper_action(
+                "Delete", lambda: request_helper_delete(record)
+            ):
+                self.refresh()
+                self.show_toast(f"{record.source} removed")
 
     class MountManagerApplication(Adw.Application):
         def __init__(self) -> None:
@@ -593,15 +577,14 @@ def run_gui() -> int:
                 flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
             )
 
-            quit_action = Gio.SimpleAction.new("quit", None)
-            quit_action.connect("activate", lambda _a, _p: self.quit())
-            self.add_action(quit_action)
-            self.set_accels_for_action("app.quit", ["<Primary>q"])
-
-            shortcuts_action = Gio.SimpleAction.new("shortcuts", None)
-            shortcuts_action.connect("activate", lambda _a, _p: self._show_shortcuts())
-            self.add_action(shortcuts_action)
-            self.set_accels_for_action("app.shortcuts", ["<Primary>question"])
+            bind_action(self, self, "app.quit", self.quit, ("<Primary>q",))
+            bind_action(
+                self,
+                self,
+                "app.shortcuts",
+                self._show_shortcuts,
+                ("<Primary>question",),
+            )
 
         def _show_shortcuts(self) -> None:
             window = self.props.active_window
