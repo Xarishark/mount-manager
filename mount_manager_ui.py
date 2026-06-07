@@ -260,7 +260,7 @@ def run_gui() -> int:
                 daemon=True,
             )
             thread.start()
-            return False  # don't repeat the timeout
+            return False
 
         def _host_check_worker(self, cancellable: Gio.Cancellable, text: str) -> None:
             try:
@@ -358,7 +358,6 @@ def run_gui() -> int:
 
             self.toast_overlay = Adw.ToastOverlay()
 
-            # Content area; Tasks 6-8 replace the list/empty children here.
             self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self.toast_overlay.set_child(self.content_box)
 
