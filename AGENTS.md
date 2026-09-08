@@ -69,8 +69,7 @@ The application is split across two files:
   not the `mount-manager` symlink. Do not change the helper CLI surface
   (`--helper {create|delete|upgrade|set-enabled}`) without updating this patch.
 - If you add a new top-level Python module that the GUI imports, you must add a matching
-  `install` line in `packaging/build-appimage.sh` AND in the README's manual-install
-  section.
+  `install` line in `packaging/build-appimage.sh`.
 
 ## Reference docs
 

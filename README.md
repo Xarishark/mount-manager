@@ -34,25 +34,13 @@ the host so it cannot be decrypted on a different machine.
 Encrypted credential files live in `/etc/mount-manager/credentials/` as
 `<id>.cred.enc`.
 
-## RPM
-
-The RPM package is available through Terra.
-
-Enable Terra first:
-
-```bash
-sudo sed -i 's/^enabled=0/enabled=1/' /etc/yum.repos.d/terra.repo
-```
-
-Install it on Bazzite with:
-
-```bash
-rpm-ostree install mount-manager
-```
-
-Reboot after installation to boot into the new deployment.
-
 ## AppImage
+
+Download the latest `SMB-Mount-Manager-<version>-x86_64.AppImage` from [Releases](https://github.com/Xarishark/mount-manager/releases).
+
+You can run the AppImage directly, or integrate it with your application menu using [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever). Gear Lever will automatically detect and offer updates when a new release is published.
+
+### Notes on AppImage Support
 
 Release AppImages are Bazzite-focused. They are intended for Bazzite and similar
 Fedora-based systems that already provide the desktop and system integration this
@@ -62,36 +50,3 @@ systemd 258 or newer with `systemd-creds`.
 The AppImage is not intended to be a fully self-contained cross-distro package.
 It packages the app entrypoint and desktop assets while relying on the host for
 the system tools required to create and manage SMB mounts.
-
-## Test as an installed app on Bazzite
-
-From the repository root, enable a transient `/usr` overlay:
-
-```bash
-sudo rpm-ostree usroverlay
-```
-
-Install the app files into the overlay:
-
-```bash
-sudo install -D -m 0755 mount_manager.py /usr/bin/mount-manager
-sudo install -D -m 0644 mount_manager_ui.py /usr/bin/mount_manager_ui.py
-sudo install -D -m 0644 data/applications/io.github.xarishark.mount-manager.desktop /usr/share/applications/io.github.xarishark.mount-manager.desktop
-sudo install -D -m 0644 data/icons/hicolor/scalable/apps/io.github.xarishark.mount-manager.svg /usr/share/icons/hicolor/scalable/apps/io.github.xarishark.mount-manager.svg
-sudo install -D -m 0644 data/metainfo/io.github.xarishark.mount-manager.metainfo.xml /usr/share/metainfo/io.github.xarishark.mount-manager.metainfo.xml
-```
-
-Refresh desktop and icon caches:
-
-```bash
-sudo update-desktop-database /usr/share/applications
-sudo gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor
-```
-
-Run the installed desktop entry:
-
-```bash
-mount-manager
-```
-
-As the overlay is temporary its cleaned up just by rebooting.

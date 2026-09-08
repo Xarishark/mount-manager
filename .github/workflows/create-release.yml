@@ -67,12 +67,15 @@ jobs:
 
           APPIMAGE="dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
           CHECKSUM="${APPIMAGE}.sha256"
+          ZSYNC="${APPIMAGE}.zsync"
           test -f "$APPIMAGE"
           test -f "$CHECKSUM"
+          test -f "$ZSYNC"
 
           gh release create "v${VERSION}" \
             "$APPIMAGE" \
             "$CHECKSUM" \
+            "$ZSYNC" \
             --title "v${VERSION}" \
             --generate-notes \
             --target "${{ github.sha }}"
