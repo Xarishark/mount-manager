@@ -1,10 +1,14 @@
-diff --git a/mount-manager b/mount-manager
---- a/mount-manager
-+++ b/mount-manager
-@@ -1019,18 +1019,51 @@
-     return "light"
+diff --git a/mount_manager.py b/mount_manager.py
+--- a/mount_manager.py
++++ b/mount_manager.py
+@@ -921,18 +921,51 @@
+     return displayed
  
  
+-def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+-    pkexec = shutil.which("pkexec")
+-    if pkexec is None:
+-        raise CommandError("pkexec was not found. Install polkit to manage mounts.")
 +def appimage_helper_path(env: dict[str, str] | None = None, source_path: Path | None = None) -> str | None:
 +    """Return the original AppImage path when running from an AppImage mount."""
 +    if env is None:
@@ -24,7 +28,8 @@ diff --git a/mount-manager b/mount-manager
 +
 +    return appimage
 +
-+
+ 
+-    command = [
 +def privileged_helper_command(pkexec: str, action: str) -> list[str]:
 +    appimage = appimage_helper_path()
 +    if appimage is not None:
@@ -36,26 +41,19 @@ diff --git a/mount-manager b/mount-manager
 +        ]
 +
 +    return [
-+        pkexec,
-+        sys.executable,
-+        str(Path(__file__).resolve()),
-+        "--helper",
-+        action,
-+    ]
+         pkexec,
+         sys.executable,
+         str(Path(__file__).resolve()),
+         "--helper",
+         action,
+     ]
 +
 +
- def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any]:
-     pkexec = shutil.which("pkexec")
-     if pkexec is None:
-         raise CommandError("pkexec was not found. Install polkit to manage mounts.")
- 
--    command = [
--        pkexec,
--        sys.executable,
--        str(Path(__file__).resolve()),
--        "--helper",
--        action,
--    ]
++def run_privileged_helper(action: str, payload: dict[str, Any]) -> dict[str, Any]:
++    pkexec = shutil.which("pkexec")
++    if pkexec is None:
++        raise CommandError("pkexec was not found. Install polkit to manage mounts.")
++
 +    command = privileged_helper_command(pkexec, action)
      result = subprocess.run(
          command,

@@ -24,6 +24,8 @@ Credentials and app metadata are stored under:
 systemd 258 or newer with `systemd-creds` available. The app refuses to start
 on older systems.
 
+libadwaita 1.8 or newer. The app refuses to start on older versions.
+
 Credentials are always stored encrypted via `systemd-creds` and decrypted by
 systemd at unit start, exposed to `mount.cifs` through `LoadCredentialEncrypted=`.
 The plaintext password never touches disk, and the encrypted blob is bound to
@@ -73,6 +75,7 @@ Install the app files into the overlay:
 
 ```bash
 sudo install -D -m 0755 mount_manager.py /usr/bin/mount-manager
+sudo install -D -m 0644 mount_manager_ui.py /usr/bin/mount_manager_ui.py
 sudo install -D -m 0644 data/applications/io.github.xarishark.mount-manager.desktop /usr/share/applications/io.github.xarishark.mount-manager.desktop
 sudo install -D -m 0644 data/icons/hicolor/scalable/apps/io.github.xarishark.mount-manager.svg /usr/share/icons/hicolor/scalable/apps/io.github.xarishark.mount-manager.svg
 sudo install -D -m 0644 data/metainfo/io.github.xarishark.mount-manager.metainfo.xml /usr/share/metainfo/io.github.xarishark.mount-manager.metainfo.xml

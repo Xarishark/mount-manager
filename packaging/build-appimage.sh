@@ -87,7 +87,8 @@ mkdir -p "$appdir/usr/share/licenses/$APP_ID"
 mkdir -p "$appdir/usr/share/metainfo"
 mkdir -p "$dist_dir"
 
-install -D -m 0755 "$repo_root/mount_manager.py" "$appdir/usr/bin/mount-manager"
+install -D -m 0755 "$repo_root/mount_manager.py" "$appdir/usr/bin/mount_manager.py"
+install -D -m 0644 "$repo_root/mount_manager_ui.py" "$appdir/usr/bin/mount_manager_ui.py"
 if ! command -v git >/dev/null 2>&1; then
   echo "git is required to apply the AppImage helper workaround." >&2
   exit 1
@@ -96,6 +97,7 @@ fi
   cd "$appdir/usr/bin"
   GIT_DIR= GIT_WORK_TREE=. git apply --no-index --quiet "$repo_root/packaging/appimage-helper.patch"
 )
+ln -sf mount_manager.py "$appdir/usr/bin/mount-manager"
 install -D -m 0644 "$repo_root/data/icons/hicolor/scalable/apps/$APP_ID.svg" \
   "$appdir/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 install -D -m 0644 "$repo_root/data/metainfo/$APP_ID.metainfo.xml" \

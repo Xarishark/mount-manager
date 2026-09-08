@@ -5,3 +5,4 @@ dist/
 *.AppImage
 *.AppImage.sha256
 tests/
+.superpowers/
