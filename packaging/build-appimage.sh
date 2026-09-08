@@ -165,8 +165,9 @@ if [ ! -x "$appimagetool" ]; then
   exit 1
 fi
 
-rm -f "$output" "$output.sha256"
-ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" --no-appstream "$appdir" "$output"
+rm -f "$output" "$output.sha256" "$output.zsync"
+UPDATE_INFO="gh-releases-zsync|Xarishark|mount-manager|latest|SMB-Mount-Manager-*-x86_64.AppImage.zsync"
+ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" -u "$UPDATE_INFO" --no-appstream "$appdir" "$output"
 chmod 0755 "$output"
 
 (
