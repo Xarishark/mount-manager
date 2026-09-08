@@ -177,11 +177,21 @@ if ! ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" -u "$UPDATE_INFO" "
 fi
 chmod 0755 "$output"
 
+# Verify zsync file was created by appimagetool
+if [ ! -f "$output.zsync" ]; then
+  echo "WARNING: zsync file not created by appimagetool, generating with zsyncmake..." >&2
+  if ! command -v zsyncmake >/dev/null 2>&1; then
+    echo "ERROR: zsyncmake not found. Install zsync package." >&2
+    exit 1
+  fi
+  zsyncmake -e "$output" -o "$output.zsync"
+fi
+
 # List files in dist directory for debugging
 echo "Files in dist directory:"
 ls -lh "$dist_dir/" || true
 
-# Verify zsync file was created
+# Final verification
 if [ ! -f "$output.zsync" ]; then
   echo "ERROR: zsync file was not created: $output.zsync" >&2
   echo "This is required for delta updates." >&2
