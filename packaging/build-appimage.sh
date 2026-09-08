@@ -167,8 +167,18 @@ fi
 
 rm -f "$output" "$output.sha256" "$output.zsync"
 UPDATE_INFO="gh-releases-zsync|Xarishark|mount-manager|latest|SMB-Mount-Manager-*-x86_64.AppImage.zsync"
-ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" -u "$UPDATE_INFO" --no-appstream "$appdir" "$output"
+if ! ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" -u "$UPDATE_INFO" "$appdir" "$output"; then
+  echo "appimagetool failed to build AppImage" >&2
+  exit 1
+fi
 chmod 0755 "$output"
+
+# Verify zsync file was created
+if [ ! -f "$output.zsync" ]; then
+  echo "ERROR: zsync file was not created: $output.zsync" >&2
+  echo "This is required for delta updates. Check appimagetool output above." >&2
+  exit 1
+fi
 
 (
   cd "$dist_dir"
@@ -177,3 +187,4 @@ chmod 0755 "$output"
 
 echo "Built AppImage: $output"
 echo "Built checksum: $output.sha256"
+echo "Built zsync: $output.zsync"
