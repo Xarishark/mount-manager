@@ -20,6 +20,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install dependencies for AppImage build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsync
+
       - name: Extract version and check against tags
         id: version_check
         run: |
@@ -68,9 +73,9 @@ jobs:
           APPIMAGE="dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
           CHECKSUM="${APPIMAGE}.sha256"
           ZSYNC="${APPIMAGE}.zsync"
-          test -f "$APPIMAGE"
-          test -f "$CHECKSUM"
-          test -f "$ZSYNC"
+          test -f "$APPIMAGE" || { echo "AppImage not found: $APPIMAGE" >&2; exit 1; }
+          test -f "$CHECKSUM" || { echo "Checksum not found: $CHECKSUM" >&2; exit 1; }
+          test -f "$ZSYNC" || { echo "zsync file not found: $ZSYNC" >&2; exit 1; }
 
           gh release create "v${VERSION}" \
             "$APPIMAGE" \
