@@ -44,7 +44,7 @@ jobs:
           VERSION: ${{ steps.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          packaging/build-appimage.sh "$VERSION"
+          packaging/build-appimage.sh
           test -s "dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
           test -s "dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage.zsync"
           cd dist
