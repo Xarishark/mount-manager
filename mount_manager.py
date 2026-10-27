@@ -211,6 +211,7 @@ def systemd_unit_name_for(mount_point: Path, suffix: str) -> str:
     result = run_command(
         ["systemd-escape", f"--suffix={suffix}", "--path", str(mount_point)],
         check=True,
+        timeout=3,
     )
     unit_name = result.stdout.strip()
     if not unit_name.endswith(f".{suffix}"):
@@ -540,7 +541,7 @@ def iter_findmnt_filesystems(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def is_mounted(mount_point: Path) -> bool:
-    result = run_command(["findmnt", "--json", "--types", "cifs,smb3"], check=False)
+    result = run_command(["findmnt", "--json", "--types", "cifs,smb3"], check=False, timeout=3)
     if result.returncode != 0:
         return False
     try:
@@ -921,15 +922,15 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
 
 
 def systemd_is_active(unit_name: str) -> bool:
-    return run_command(["systemctl", "is-active", "--quiet", unit_name], check=False).returncode == 0
+    return run_command(["systemctl", "is-active", "--quiet", unit_name], check=False, timeout=3).returncode == 0
 
 
 def systemd_is_enabled(unit_name: str) -> bool:
-    return run_command(["systemctl", "is-enabled", "--quiet", unit_name], check=False).returncode == 0
+    return run_command(["systemctl", "is-enabled", "--quiet", unit_name], check=False, timeout=3).returncode == 0
 
 
 def systemd_status(unit_name: str) -> str:
-    result = run_command(["systemctl", "is-active", unit_name], check=False)
+    result = run_command(["systemctl", "is-active", unit_name], check=False, timeout=3)
     status = result.stdout.strip()
     if status:
         return status.capitalize()
@@ -952,7 +953,7 @@ def load_managed_mounts() -> list[ManagedMount]:
 
 
 def load_current_smb_mounts() -> list[DisplayedMount]:
-    result = run_command(["findmnt", "--json", "--types", "cifs,smb3"], check=False)
+    result = run_command(["findmnt", "--json", "--types", "cifs,smb3"], check=False, timeout=3)
     if result.returncode != 0:
         return []
     try:

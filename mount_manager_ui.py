@@ -28,6 +28,7 @@ from mount_manager import (
 )
 
 import sys
+import queue
 import threading
 import gi
 
@@ -35,6 +36,56 @@ gi.require_version("Adw", "1")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+
+
+class BackgroundWorker:
+    """One app-owned thread; callbacks are delivered on the GTK main loop."""
+
+    def __init__(self) -> None:
+        self._jobs = queue.Queue()
+        self._closed = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="mount-manager-worker", daemon=True)
+        self._thread.start()
+
+    def submit(self, operation, callback, cancellable=None):
+        if self._closed.is_set():
+            raise RuntimeError("The application worker is closed.")
+        if cancellable is None:
+            cancellable = Gio.Cancellable()
+        self._jobs.put((operation, callback, cancellable))
+        return cancellable
+
+    def _run(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            operation, callback, cancellable = job
+            del job
+            if not self._closed.is_set() and not cancellable.is_cancelled():
+                result, error = None, None
+                try:
+                    result = operation()
+                except Exception as exc:
+                    error = exc
+                if not self._closed.is_set() and not cancellable.is_cancelled():
+                    GLib.idle_add(self._deliver, callback, cancellable, result, error)
+                del result, error
+            del operation, callback, cancellable
+
+    def _deliver(self, callback, cancellable, result, error) -> bool:
+        if not self._closed.is_set() and not cancellable.is_cancelled():
+            callback(result, error)
+        return GLib.SOURCE_REMOVE
+
+    def close(self) -> None:
+        self._closed.set()
+        while True:
+            try:
+                self._jobs.get_nowait()
+            except queue.Empty:
+                break
+        self._jobs.put(None)
 
 
 def GLib_markup_escape(text: str) -> str:
@@ -143,6 +194,7 @@ def run_gui() -> int:
             self.share_path: SharePath | None = None
             self._debounce_id: int = 0
             self._cancellable: Gio.Cancellable | None = None
+            self._adding = False
 
             self.cancel_button = Gtk.Button(label="Cancel")
             self.cancel_button.connect("clicked", lambda _b: self.close())
@@ -232,6 +284,7 @@ def run_gui() -> int:
 
         def _cleanup(self, *_args) -> None:
             self._cancel_pending_host_check()
+            self.password_row.set_text("")
 
         def _show_banner(self, message: str) -> None:
             self.banner.set_title(message)
@@ -271,25 +324,12 @@ def run_gui() -> int:
             cancellable = Gio.Cancellable()
             self._cancellable = cancellable
             self.host_spinner.set_visible(True)
-            thread = threading.Thread(
-                target=self._host_check_worker,
-                args=(cancellable, text),
-                daemon=True,
+            self.main_window.get_application().worker.submit(
+                lambda: check_smb_host_reachable(text),
+                lambda result, error: self._on_host_check_done(cancellable, result, error),
+                cancellable,
             )
-            thread.start()
             return False
-
-        def _host_check_worker(self, cancellable: Gio.Cancellable, text: str) -> None:
-            try:
-                result: tuple[SharePath | None, BaseException | None] = (
-                    check_smb_host_reachable(text),
-                    None,
-                )
-            except Exception as exc:
-                result = (None, exc)
-            if cancellable.is_cancelled():
-                return
-            GLib.idle_add(self._on_host_check_done, cancellable, result[0], result[1])
 
         def _on_host_check_done(
             self,
@@ -314,31 +354,51 @@ def run_gui() -> int:
 
         def _update_add_sensitive(self) -> None:
             ready = (
-                self.share_path is not None
+                not self._adding
+                and self.share_path is not None
                 and bool(self.user_row.get_text().strip())
                 and bool(self.password_row.get_text())
             )
             self.add_button.set_sensitive(ready)
 
         def _on_add_clicked(self) -> None:
-            if self.share_path is None:
+            if self.share_path is None or self._adding:
                 return
             share = self.share_path.source
-            username = self.user_row.get_text()
-            password = self.password_row.get_text()
+            username, password = self.user_row.get_text(), self.password_row.get_text()
             try:
                 validate_credentials(username, password)
-                request_helper_create(share, username, password)
             except MountManagerError as exc:
                 self._show_banner(str(exc))
                 return
-            except Exception as exc:
-                self._show_banner(f"Unexpected error: {exc}")
-                return
 
-            self.close()
-            self.main_window.refresh()
-            self.main_window.show_toast(f"{share} added")
+            def done(error) -> None:
+                self._adding = False
+                self.set_can_close(True)
+                self.cancel_button.set_sensitive(True)
+                self.add_button.set_label("Add")
+                self.host_spinner.set_visible(False)
+                for entry in (self.path_row, self.user_row, self.password_row):
+                    entry.set_sensitive(True)
+                self._update_add_sensitive()
+                if error is not None:
+                    self._show_banner(str(error))
+                else:
+                    self.close()
+                    self.main_window.show_toast(f"{share} added")
+
+            if self.main_window._run_helper_action(
+                "Add share", lambda: request_helper_create(share, username, password), on_done=done
+            ):
+                self._adding = True
+                self.set_can_close(False)
+                self.cancel_button.set_sensitive(False)
+                self.add_button.set_label("Adding…")
+                self.add_button.set_sensitive(False)
+                self.host_spinner.set_visible(True)
+                self._hide_banner()
+                for entry in (self.path_row, self.user_row, self.password_row):
+                    entry.set_sensitive(False)
 
     class UpdateCredentialsDialog(Adw.Dialog):
         def __init__(self, main_window: "MainWindow", record: ManagedMount) -> None:
@@ -348,15 +408,16 @@ def run_gui() -> int:
             self.main_window = main_window
             self.record = record
 
-            cancel_button = Gtk.Button(label="Cancel")
-            cancel_button.connect("clicked", lambda _b: self.close())
+            self._saving = False
+            self.cancel_button = Gtk.Button(label="Cancel")
+            self.cancel_button.connect("clicked", lambda _b: self.close())
             self.save_button = Gtk.Button(label="Save")
             self.save_button.add_css_class("suggested-action")
             self.save_button.set_sensitive(False)
             self.save_button.connect("clicked", lambda _b: self._on_save_clicked())
             header = Adw.HeaderBar()
             header.set_show_end_title_buttons(False)
-            header.pack_start(cancel_button)
+            header.pack_start(self.cancel_button)
             header.pack_end(self.save_button)
 
             group = Adw.PreferencesGroup()
@@ -390,28 +451,62 @@ def run_gui() -> int:
 
         def _update_save_sensitive(self) -> None:
             self.save_button.set_sensitive(
-                bool(self.user_row.get_text().strip()) and bool(self.password_row.get_text())
+                not self._saving
+                and bool(self.user_row.get_text().strip()) and bool(self.password_row.get_text())
             )
 
         def _on_save_clicked(self) -> None:
+            if self._saving:
+                return
+            username, password = self.user_row.get_text(), self.password_row.get_text()
+            try:
+                validate_credentials(username, password)
+            except MountManagerError as exc:
+                self.main_window.show_toast(str(exc))
+                return
+
+            def done(error) -> None:
+                self._saving = False
+                self.set_can_close(True)
+                self.cancel_button.set_sensitive(True)
+                self.save_button.set_label("Save")
+                self.user_row.set_sensitive(True)
+                self.password_row.set_sensitive(True)
+                self._update_save_sensitive()
+                if error is not None:
+                    self.main_window.show_toast(f"Update credentials failed: {error}")
+                else:
+                    self.close()
+                    self.main_window.show_toast(f"Credentials updated for {self.record.source}")
+
             if self.main_window._run_helper_action(
                 "Update credentials",
-                lambda: request_helper_update_credentials(
-                    self.record, self.user_row.get_text(), self.password_row.get_text()
-                ),
+                lambda: request_helper_update_credentials(self.record, username, password),
+                on_done=done,
             ):
-                self.close()
-                self.main_window.refresh()
-                self.main_window.show_toast(f"Credentials updated for {self.record.source}")
+                self._saving = True
+                self.set_can_close(False)
+                self.cancel_button.set_sensitive(False)
+                self.save_button.set_label("Saving…")
+                self.save_button.set_sensitive(False)
+                self.user_row.set_sensitive(False)
+                self.password_row.set_sensitive(False)
 
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
             super().__init__(application=app, title=APP_NAME)
             self.set_default_size(760, 480)
             self.set_icon_name(APP_ICON_NAME)
+            self._refreshing = False
+            self._operation_busy = False
+            self._loaded = False
+            self._closing = False
+            self._close_when_idle = False
+            self._refresh_cancellable = None
+            self.connect("close-request", self._on_close_request)
 
             bind_action(self, app, "win.about", self.show_about_dialog)
-            bind_action(self, app, "win.close", self.close, ("<Primary>w",))
+            bind_action(self, app, "win.close", self.request_close, ("<Primary>w",))
             bind_action(self, app, "win.add-share", self.show_add_dialog, ("<Primary>n",))
             bind_action(self, app, "win.refresh", self.refresh, ("<Primary>r",))
             bind_action(self, app, "win.show-menu", self._open_primary_menu, ("F10",))
@@ -424,9 +519,10 @@ def run_gui() -> int:
             self.menu_button.set_menu_model(menu)
             self.menu_button.set_tooltip_text("Primary menu")
 
-            refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
-            refresh_button.set_tooltip_text("Refresh")
-            refresh_button.set_action_name("win.refresh")
+            self.refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+            self.refresh_button.set_tooltip_text("Refresh")
+            self.refresh_button.set_action_name("win.refresh")
+            self.refresh_spinner = Adw.Spinner()
 
             add_button = Gtk.Button.new_from_icon_name("list-add-symbolic")
             add_button.set_tooltip_text("Add SMB share")
@@ -435,7 +531,7 @@ def run_gui() -> int:
             header = Adw.HeaderBar()
             header.pack_start(add_button)
             header.pack_end(self.menu_button)
-            header.pack_end(refresh_button)
+            header.pack_end(self.refresh_button)
 
             self.toast_overlay = Adw.ToastOverlay()
 
@@ -480,6 +576,12 @@ def run_gui() -> int:
             self.mount_group.set_separate_rows(True)
             self.preferences_page.add(self.mount_group)
 
+            self.loading_page = Adw.StatusPage(title="Loading shares…")
+            self.loading_page.set_vexpand(True)
+            loading_spinner = Adw.Spinner()
+            loading_spinner.set_size_request(32, 32)
+            self.loading_page.set_child(loading_spinner)
+            self.content_box.append(self.loading_page)
             self.content_box.append(self.preferences_page)
             self.content_box.append(self.empty_page)
 
@@ -496,17 +598,74 @@ def run_gui() -> int:
         def show_toast(self, message: str) -> None:
             self.toast_overlay.add_toast(Adw.Toast(title=message))
 
+        def _update_busy(self) -> None:
+            busy = self._refreshing or self._operation_busy
+            self.lookup_action("refresh").set_enabled(not busy)
+            self.lookup_action("add-share").set_enabled(not busy)
+            self.mount_group.set_sensitive(not busy)
+            if busy:
+                self.refresh_button.set_child(self.refresh_spinner)
+                self.refresh_button.set_tooltip_text("Working…")
+            else:
+                self.refresh_button.set_icon_name("view-refresh-symbolic")
+                self.refresh_button.set_tooltip_text("Refresh")
+
+        def request_close(self) -> None:
+            if self._operation_busy:
+                self._close_when_idle = True
+                self.show_toast("Finishing the current operation before closing…")
+            else:
+                dialog = self.get_visible_dialog()
+                if dialog is None:
+                    self.close()
+                else:
+                    dialog.connect("closed", lambda _d: self.close())
+                    dialog.force_close()
+
+        def _on_close_request(self, *_args) -> bool:
+            if self._operation_busy:
+                self.request_close()
+                return True
+            self._closing = True
+            if self._refresh_cancellable is not None:
+                self._refresh_cancellable.cancel()
+            return False
+
         def refresh(self) -> None:
+            if self._refreshing or self._operation_busy or self._closing:
+                return
+            self._refreshing = True
+            self._update_busy()
+            self.loading_page.set_visible(not self._loaded)
+            if not self._loaded:
+                self.preferences_page.set_visible(False)
+                self.empty_page.set_visible(False)
+            self._refresh_cancellable = self.get_application().worker.submit(
+                load_displayed_mounts, self._on_refresh_done
+            )
+
+        def _on_refresh_done(self, mounts, error) -> None:
+            if self._closing:
+                return
+            self._refreshing = False
+            self._refresh_cancellable = None
+            self._update_busy()
+            self.loading_page.set_visible(False)
+            if error is not None:
+                self.show_toast(f"Could not load shares: {error}")
+                if not self._loaded:
+                    self.empty_page.set_title("Could not load shares")
+                    self.empty_page.set_visible(True)
+                return
+            self._loaded = True
+            self.empty_page.set_title("No SMB shares")
             while (row := self.mount_group.get_row(0)) is not None:
                 self.mount_group.remove(row)
-
-            mounts = load_displayed_mounts()
             self.empty_page.set_visible(not mounts)
             self.preferences_page.set_visible(bool(mounts))
             self.credential_notice.set_visible(
                 any(mount.managed and mount.credentials_need_update for mount in mounts)
             )
-
             for mount in mounts:
                 self.mount_group.add(self.row_for(mount))
 
@@ -615,9 +774,6 @@ def run_gui() -> int:
             about.present(self)
 
         def open_mount_folder(self, record: ManagedMount) -> None:
-            if not record.mount_point.exists():
-                self.show_toast(f"Mount folder does not exist: {record.mount_point}")
-                return
             launcher = Gtk.FileLauncher.new(
                 Gio.File.new_for_path(str(record.mount_point))
             )
@@ -633,29 +789,41 @@ def run_gui() -> int:
                     return
                 self.show_toast(f"Could not open folder: {exc.message}")
 
-        def _run_helper_action(self, label: str, callback) -> bool:
-            """Invoke a privileged helper callback, toast on failure, return True on success."""
-            try:
-                callback()
-            except Exception as exc:
-                self.show_toast(f"{label} failed: {exc}")
+        def _run_helper_action(self, label: str, callback, *, message=None, on_done=None) -> bool:
+            """Serialize changes and deliver their result on the main thread."""
+            if self._operation_busy or self._refreshing or self._closing:
                 return False
+            self._operation_busy = True
+            self._update_busy()
+
+            def done(_result, error) -> None:
+                self._operation_busy = False
+                self._update_busy()
+                if on_done is not None:
+                    on_done(error)
+                elif error is not None:
+                    self.show_toast(f"{label} failed: {error}")
+                elif message:
+                    self.show_toast(message)
+                if self._close_when_idle:
+                    self.request_close()
+                else:
+                    self.refresh()
+
+            self.get_application().worker.submit(callback, done)
             return True
 
         def upgrade_mount(self, record: ManagedMount) -> None:
-            if self._run_helper_action(
-                "Upgrade", lambda: request_helper_upgrade(record)
-            ):
-                self.refresh()
-                self.show_toast(f"{record.source} upgraded")
+            self._run_helper_action(
+                "Upgrade", lambda: request_helper_upgrade(record),
+                message=f"{record.source} upgraded",
+            )
 
         def toggle_mount(self, record: ManagedMount, switch: Gtk.Switch) -> None:
             enabled = switch.get_active()
-            switch.set_sensitive(False)
             self._run_helper_action(
                 "Toggle", lambda: request_helper_set_enabled(record, enabled)
             )
-            self.refresh()
 
         def confirm_delete(self, record: ManagedMount) -> None:
             alert = Adw.AlertDialog(
@@ -678,11 +846,10 @@ def run_gui() -> int:
         ) -> None:
             if response != "delete":
                 return
-            if self._run_helper_action(
-                "Delete", lambda: request_helper_delete(record)
-            ):
-                self.refresh()
-                self.show_toast(f"{record.source} removed")
+            self._run_helper_action(
+                "Delete", lambda: request_helper_delete(record),
+                message=f"{record.source} removed",
+            )
 
     class MountManagerApplication(Adw.Application):
         def __init__(self) -> None:
@@ -691,7 +858,8 @@ def run_gui() -> int:
                 flags=Gio.ApplicationFlags.DEFAULT_FLAGS,
             )
 
-            bind_action(self, self, "app.quit", self.quit, ("<Primary>q",))
+            self.worker = BackgroundWorker()
+            bind_action(self, self, "app.quit", self.request_quit, ("<Primary>q",))
             bind_action(
                 self,
                 self,
@@ -699,6 +867,17 @@ def run_gui() -> int:
                 self._show_shortcuts,
                 ("<Primary>question",),
             )
+
+        def request_quit(self) -> None:
+            window = self.props.active_window
+            if window is not None:
+                window.request_close()
+            else:
+                self.quit()
+
+        def do_shutdown(self) -> None:
+            self.worker.close()
+            Adw.Application.do_shutdown(self)
 
         def _show_shortcuts(self) -> None:
             window = self.props.active_window

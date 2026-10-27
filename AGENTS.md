@@ -51,6 +51,9 @@ The application is split across two files:
   of `Adw.PreferencesGroup`s — **not** `Adw.PreferencesPage`, whose internal
   `ScrolledWindow` would fix the dialog height and hide content revealed at runtime
   (e.g. the credentials group) behind a scrollbar.
+- One app-owned `BackgroundWorker` serializes list reads, host checks, and helper
+  operations. Only main-loop callbacks may access GTK. Cancel stale host/read
+  results; defer closing until an active privileged operation finishes.
 - Always escape user-controlled strings (mount paths, statuses) with
   `GLib.markup_escape_text` before passing them to widgets that render Pango markup.
 - About box uses `Adw.AboutDialog`.
