@@ -23,6 +23,7 @@ from mount_manager import (
     request_helper_delete,
     request_helper_set_enabled,
     request_helper_upgrade,
+    request_helper_update_credentials,
     validate_credentials,
 )
 
@@ -323,6 +324,71 @@ def run_gui() -> int:
             self.main_window.refresh()
             self.main_window.show_toast(f"{share} added")
 
+    class UpdateCredentialsDialog(Adw.Dialog):
+        def __init__(self, main_window: "MainWindow", record: ManagedMount) -> None:
+            super().__init__()
+            self.set_title("Edit Credentials")
+            self.set_content_width(420)
+            self.main_window = main_window
+            self.record = record
+
+            cancel_button = Gtk.Button(label="Cancel")
+            cancel_button.connect("clicked", lambda _b: self.close())
+            self.save_button = Gtk.Button(label="Save")
+            self.save_button.add_css_class("suggested-action")
+            self.save_button.set_sensitive(False)
+            self.save_button.connect("clicked", lambda _b: self._on_save_clicked())
+            header = Adw.HeaderBar()
+            header.set_show_end_title_buttons(False)
+            header.pack_start(cancel_button)
+            header.pack_end(self.save_button)
+
+            group = Adw.PreferencesGroup()
+            group.set_title(GLib_markup_escape(record.source))
+            group.set_description(
+                "Enter your username and password again to replace the stored credentials. "
+                "They will be used the next time this share is mounted."
+            )
+            self.user_row = Adw.EntryRow(title="Username")
+            self.password_row = Adw.PasswordEntryRow(title="Password")
+            for entry in (self.user_row, self.password_row):
+                entry.connect("changed", lambda _r: self._update_save_sensitive())
+                group.add(entry)
+
+            body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+            body.set_margin_top(24)
+            body.set_margin_bottom(24)
+            body.set_margin_start(12)
+            body.set_margin_end(12)
+            body.append(group)
+            clamp = Adw.Clamp()
+            clamp.set_maximum_size(600)
+            clamp.set_child(body)
+            toolbar = Adw.ToolbarView()
+            toolbar.add_top_bar(header)
+            toolbar.set_content(clamp)
+            self.set_child(toolbar)
+            self.set_default_widget(self.save_button)
+            self.connect("map", lambda _d: self.user_row.grab_focus())
+            self.connect("closed", lambda _d: self.password_row.set_text(""))
+
+        def _update_save_sensitive(self) -> None:
+            self.save_button.set_sensitive(
+                bool(self.user_row.get_text().strip()) and bool(self.password_row.get_text())
+            )
+
+        def _on_save_clicked(self) -> None:
+            if self.main_window._run_helper_action(
+                "Update credentials",
+                lambda: request_helper_update_credentials(
+                    self.record, self.user_row.get_text(), self.password_row.get_text()
+                ),
+            ):
+                self.close()
+                self.main_window.refresh()
+                self.main_window.show_toast(f"Credentials updated for {self.record.source}")
+
+
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
             super().__init__(application=app, title=APP_NAME)
@@ -464,9 +530,15 @@ def run_gui() -> int:
                 row.add_suffix(open_button)
 
             menu = Gio.Menu()
+            menu.append("Edit Credentials\u2026", f"row.update-credentials::{record.manager_id}")
             menu.append("Delete\u2026", f"row.delete::{record.manager_id}")
 
             row_action_group = Gio.SimpleActionGroup()
+            credentials_action = Gio.SimpleAction.new("update-credentials", GLib.VariantType.new("s"))
+            credentials_action.connect(
+                "activate", lambda _a, _p, r=record: UpdateCredentialsDialog(self, r).present(self)
+            )
+            row_action_group.add_action(credentials_action)
             delete_action = Gio.SimpleAction.new("delete", GLib.VariantType.new("s"))
             delete_action.connect(
                 "activate", lambda _a, _p, r=record: self.confirm_delete(r)

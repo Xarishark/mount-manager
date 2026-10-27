@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -716,6 +717,23 @@ def upgrade_mount(record: ManagedMount) -> None:
     reset_failed_units(record)
 
 
+def update_credentials(manager_id: str, username_raw: str, password_raw: str) -> None:
+    username, password = validate_credentials(username_raw, password_raw)
+    record = load_record_by_id(manager_id)
+
+    # Encrypt alongside the destination so replacement is atomic. Never try to
+    # decrypt the old blob: it may no longer be readable after a TPM change.
+    with tempfile.TemporaryDirectory(dir=record.credential_path.parent) as temporary_dir:
+        replacement = Path(temporary_dir) / record.credential_path.name
+        write_encrypted_credential_file(replacement, CREDENTIAL_NAME, username, password)
+        os.replace(replacement, record.credential_path)
+
+    # An active automount can retry on the next access. Leave running mounts,
+    # unit files, metadata, and enabled/disabled state alone.
+    reset_failed_units(record)
+
+
+
 def delete_mount_by_id(manager_id: str) -> None:
     delete_mount(load_record_by_id(manager_id))
 
@@ -976,6 +994,15 @@ def request_helper_upgrade(record: ManagedMount) -> None:
     run_privileged_helper("upgrade", {"manager_id": record.manager_id})
 
 
+def request_helper_update_credentials(record: ManagedMount, username: str, password: str) -> None:
+    validate_credentials(username, password)
+    run_privileged_helper(
+        "update-credentials",
+        {"manager_id": record.manager_id, "username": username, "password": password},
+    )
+
+
+
 def request_helper_set_enabled(record: ManagedMount, enabled: bool) -> None:
     run_privileged_helper(
         "set-enabled",
@@ -1027,6 +1054,12 @@ def run_helper_mode(action: str) -> int:
             delete_mount_by_id(str(payload.get("manager_id", "")))
         elif action == "upgrade":
             upgrade_mount_by_id(str(payload.get("manager_id", "")))
+        elif action == "update-credentials":
+            update_credentials(
+                str(payload.get("manager_id", "")),
+                str(payload.get("username", "")),
+                str(payload.get("password", "")),
+            )
         elif action == "set-enabled":
             set_mount_enabled_by_id(
                 str(payload.get("manager_id", "")),
@@ -1056,7 +1089,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=APP_NAME)
     parser.add_argument(
         "--helper",
-        choices=("create", "delete", "upgrade", "set-enabled"),
+        choices=("create", "delete", "upgrade", "set-enabled", "update-credentials"),
         help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)

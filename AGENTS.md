@@ -67,7 +67,7 @@ The application is split across two files:
 - `packaging/appimage-helper.patch` rewrites the helper invocation so the AppImage
   re-execs itself under `pkexec`. It targets `mount_manager.py` (the installed filename),
   not the `mount-manager` symlink. Do not change the helper CLI surface
-  (`--helper {create|delete|upgrade|set-enabled}`) without updating this patch.
+  (`--helper {create|delete|upgrade|set-enabled|update-credentials}`) without updating this patch.
 - If you add a new top-level Python module that the GUI imports, you must add a matching
   `install` line in `packaging/build-appimage.sh`.
 
