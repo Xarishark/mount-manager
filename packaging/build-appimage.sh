@@ -145,6 +145,11 @@ if [ "$appdir_only" -eq 1 ]; then
   exit 0
 fi
 
+if ! command -v zsyncmake >/dev/null 2>&1; then
+  echo "zsyncmake not found. Install the zsync package." >&2
+  exit 1
+fi
+
 appimagetool="${APPIMAGETOOL:-}"
 if [ -z "$appimagetool" ] && command -v appimagetool >/dev/null 2>&1; then
   appimagetool="$(command -v appimagetool)"
@@ -169,7 +174,8 @@ echo "Using appimagetool: $appimagetool"
 "$appimagetool" --version || true
 
 rm -f "$output" "$output.sha256" "$output.zsync"
-UPDATE_INFO="zsync|https://github.com/Xarishark/mount-manager/releases/download/v${version}/${APPIMAGE_NAME}-${version}-${arch}.AppImage.zsync"
+UPDATE_INFO="gh-releases-zsync|Xarishark|mount-manager|latest|${APPIMAGE_NAME}-*-${arch}.AppImage.zsync"
+DOWNLOAD_URL="https://github.com/Xarishark/mount-manager/releases/download/v${version}/${APPIMAGE_NAME}-${version}-${arch}.AppImage"
 echo "Building AppImage with UPDATE_INFO: $UPDATE_INFO"
 if ! ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" -u "$UPDATE_INFO" "$appdir" "$output"; then
   echo "appimagetool failed to build AppImage" >&2
@@ -177,15 +183,9 @@ if ! ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" -u "$UPDATE_INFO" "
 fi
 chmod 0755 "$output"
 
-# Verify zsync file was created by appimagetool
-if [ ! -f "$output.zsync" ]; then
-  echo "WARNING: zsync file not created by appimagetool, generating with zsyncmake..." >&2
-  if ! command -v zsyncmake >/dev/null 2>&1; then
-    echo "ERROR: zsyncmake not found. Install zsync package." >&2
-    exit 1
-  fi
-  zsyncmake -e "$output" -o "$output.zsync"
-fi
+# Always generate the control file with a public URL. appimagetool may otherwise
+# embed the build machine's absolute output path, which clients cannot download.
+zsyncmake -e -u "$DOWNLOAD_URL" -o "$output.zsync" "$output"
 
 # List files in dist directory for debugging
 echo "Files in dist directory:"

@@ -81,6 +81,10 @@ The application is split across two files:
 - If you add a new top-level Python module that the GUI imports, you must add a matching
   `install` line in `packaging/build-appimage.sh`.
 
+- AppImage update information must use the GitHub Releases `latest` transport
+  with a version wildcard. Always generate zsync metadata with the public release
+  download URL; never embed a CI filesystem path or pin discovery to one version.
+
 ## Reference docs
 
 - Design spec: `docs/specs/2026-05-28-libadwaita-migration-design.md`
