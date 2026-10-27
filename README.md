@@ -38,7 +38,10 @@ Encrypted credential files live in `/etc/mount-manager/credentials/` as
 
 Download the latest `SMB-Mount-Manager-<version>-x86_64.AppImage` from [Releases](https://github.com/Xarishark/mount-manager/releases).
 
-You can run the AppImage directly, or integrate it with your application menu using [Gear Lever](https://flathub.org/apps/it.mijorus.gearlever). Gear Lever will automatically detect and offer updates when a new release is published.
+You can run the AppImage directly, or integrate it with your application menu using
+[Gear Lever](https://flathub.org/apps/it.mijorus.gearlever).
+
+AppImage updates through Gear Lever are supported starting with version 0.1.10.
 
 ### Notes on AppImage Support
 
