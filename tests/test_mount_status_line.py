@@ -26,13 +26,13 @@ class MountStatusLineTest(unittest.TestCase):
         from mount_manager_ui import mount_status_line
 
         line = mount_status_line(_mount(status="Mounted"))
-        self.assertEqual(line, "/mnt/mount-manager/share · Mounted")
+        self.assertEqual(line, "Mounted · /mnt/mount-manager/share")
 
     def test_idle_status(self) -> None:
         from mount_manager_ui import mount_status_line
 
         line = mount_status_line(_mount(status="Idle", active=False))
-        self.assertEqual(line, "/mnt/mount-manager/share · Idle")
+        self.assertEqual(line, "Idle · /mnt/mount-manager/share")
 
     def test_unmanaged_uses_unmanaged_status(self) -> None:
         from mount_manager_ui import mount_status_line
@@ -44,7 +44,7 @@ class MountStatusLineTest(unittest.TestCase):
                 managed=False,
             )
         )
-        self.assertEqual(line, "/mnt/elsewhere · Mounted (not managed)")
+        self.assertEqual(line, "Mounted (not managed) · /mnt/elsewhere")
 
 
 if __name__ == "__main__":

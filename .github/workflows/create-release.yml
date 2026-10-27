@@ -1,88 +1,130 @@
-name: Create Release
-
-env:
-  WORKFLOW_VERSION: 2
+name: Build AppImage and Release
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  create_release:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  build_appimage:
+    name: Build AppImage
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Install dependencies for AppImage build
+      - name: Read version
+        id: metadata
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("data/metainfo/io.github.xarishark.mount-manager.metainfo.xml").find("releases/release").get("version", ""))')
+          if [[ ! "$version" =~ ^[0-9][0-9A-Za-z.+-]*$ ]]; then
+            echo "Invalid version in AppStream metadata: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=SMB-Mount-Manager-${GITHUB_SHA}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y zsync
 
-      - name: Extract version and check against tags
+      - name: Build AppImage
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          packaging/build-appimage.sh
+          test -s "dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
+          test -s "dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage.zsync"
+          cd dist
+          sha256sum -c "SMB-Mount-Manager-${VERSION}-x86_64.AppImage.sha256"
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: |
+            dist/*.AppImage
+            dist/*.AppImage.sha256
+            dist/*.AppImage.zsync
+          if-no-files-found: error
+          compression-level: 0
+
+  create_release:
+    name: Publish version bump
+    needs: build_appimage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build_appimage.outputs.version }}
+      BEFORE_SHA: ${{ github.event.before }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout history and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check version bump
         id: version_check
         run: |
           set -euo pipefail
-
-          new_version=$(sed -n -E 's/^[[:space:]]*<release[^>]*version="?([^"]+)"?.*/\1/p; s/^[[:space:]]*<component[^>]*version="?([^"]+)"?.*/\1/p' data/metainfo/io.github.xarishark.mount-manager.metainfo.xml | head -n1)
-
-          if [ -z "$new_version" ]; then
-            echo "No version found in manifest"
-            exit 0
+          manifest=data/metainfo/io.github.xarishark.mount-manager.metainfo.xml
+          previous_version=
+          if [[ ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+            previous_version=$(git show "$BEFORE_SHA:$manifest" | python3 -c 'import sys, xml.etree.ElementTree as ET; print(ET.parse(sys.stdin).find("releases/release").get("version", ""))')
           fi
+          latest_tag=$(git tag --list 'v[0-9]*' --sort=-version:refname | sed -n '1p')
+          latest_version=${latest_tag#v}
 
-          # Compare against latest tag.
-          git fetch --tags origin || true
-          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || true)
-          latest_version="${latest_tag#v}"
+          for baseline in "$previous_version" "$latest_version"; do
+            if [ -z "$baseline" ]; then
+              continue
+            fi
+            highest=$(printf '%s\n' "$baseline" "$VERSION" | sort -V | tail -n1)
+            if [ "$VERSION" = "$baseline" ] || [ "$VERSION" != "$highest" ]; then
+              echo "Version $VERSION is not newer than $baseline; skipping release."
+              exit 0
+            fi
+          done
+          echo "release=true" >> "$GITHUB_OUTPUT"
 
-          if [ -z "$latest_version" ]; then
-            echo "No existing tags, will create first release"
-            echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+      - name: Download built AppImage
+        if: steps.version_check.outputs.release == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build_appimage.outputs.artifact_name }}
+          path: dist
 
-          # Check if new version is higher.
-          highest=$(printf '%s\n' "$latest_version" "$new_version" | sort -V | tail -n1)
-          if [ "$highest" = "$new_version" ] && [ "$new_version" != "$latest_version" ]; then
-            echo "Version bumped from $latest_version to $new_version"
-            echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
-          else
-            echo "Version $new_version not higher than $latest_version, skipping release"
-          fi
-
-      - name: Build AppImage and create release
-        if: steps.version_check.outputs.new_version != ''
+      - name: Create release
+        if: steps.version_check.outputs.release == 'true'
         run: |
-          VERSION="${{ steps.version_check.outputs.new_version }}"
-          echo "Creating release v${VERSION}"
-          # Fail if the release already exists to keep releases immutable.
+          set -euo pipefail
           if gh release view "v${VERSION}" >/dev/null 2>&1; then
-            echo "Release v${VERSION} already exists aborting" >&2
+            echo "Release v${VERSION} already exists; refusing to overwrite it." >&2
             exit 1
           fi
-
-          packaging/build-appimage.sh "$VERSION"
-
-          APPIMAGE="dist/SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
-          CHECKSUM="${APPIMAGE}.sha256"
-          ZSYNC="${APPIMAGE}.zsync"
-          test -f "$APPIMAGE" || { echo "AppImage not found: $APPIMAGE" >&2; exit 1; }
-          test -f "$CHECKSUM" || { echo "Checksum not found: $CHECKSUM" >&2; exit 1; }
-          test -f "$ZSYNC" || { echo "zsync file not found: $ZSYNC" >&2; exit 1; }
-
+          cd dist
+          APPIMAGE="SMB-Mount-Manager-${VERSION}-x86_64.AppImage"
+          test -s "$APPIMAGE"
+          test -s "$APPIMAGE.zsync"
+          sha256sum -c "$APPIMAGE.sha256"
           gh release create "v${VERSION}" \
-            "$APPIMAGE" \
-            "$CHECKSUM" \
-            "$ZSYNC" \
+            "$APPIMAGE" "$APPIMAGE.sha256" "$APPIMAGE.zsync" \
             --title "v${VERSION}" \
             --generate-notes \
-            --target "${{ github.sha }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            --target "$GITHUB_SHA"

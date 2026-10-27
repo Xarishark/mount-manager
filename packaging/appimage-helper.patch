@@ -1,7 +1,7 @@
 diff --git a/mount_manager.py b/mount_manager.py
 --- a/mount_manager.py
 +++ b/mount_manager.py
-@@ -921,18 +921,51 @@
+@@ -921,18 +921,52 @@
      return displayed
  
  
@@ -31,6 +31,7 @@ diff --git a/mount_manager.py b/mount_manager.py
  
 -    command = [
 +def privileged_helper_command(pkexec: str, action: str) -> list[str]:
++    # Forward all helper actions, including credential updates, unchanged.
 +    appimage = appimage_helper_path()
 +    if appimage is not None:
 +        return [

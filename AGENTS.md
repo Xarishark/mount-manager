@@ -27,12 +27,19 @@ The application is split across two files:
 - Color scheme is delegated to `Adw.StyleManager` (`ColorScheme.DEFAULT`). Do not
   re-introduce custom CSS for theming or a custom color-scheme detector.
 - The mount list uses `Adw.PreferencesPage` → `Adw.PreferencesGroup` → `Adw.ActionRow`
-  per mount with the **hybrid row pattern**: switch + one inline primary suffix
-  (open-folder or Upgrade) + kebab `MenuButton` containing destructive actions.
+  per mount with a leading activation switch and inline suffix buttons ordered
+  open-folder (or Upgrade), Edit Credentials, then Delete. Delete always opens
+  the confirmation dialog.
   Unmanaged shares show a "Not managed" label and no controls.
 - To enumerate or clear rows in an `Adw.PreferencesGroup`, use
   `group.get_row(index)` — not `get_first_child()`, which returns the group's internal
   structure widgets, not the `ActionRow` children.
+- Confirmed TPM credential failures also use a persistent notice above the mount
+  list and a steady red destructive-action style on affected Edit Credentials buttons.
+  The notice uses a compact red pill with one scoped CSS rule using semantic
+  error colors and the full explanation always visible. Affected share details
+  are dimmed and activation/folder access is disabled; Edit and Delete stay usable.
+  Do not override the global theme. Keep share subtitles to one line with status before path; full details stay in the tooltip.
 - Status / error messages are surfaced as `Adw.Toast` via `MainWindow.show_toast()`.
   Do not add new `Gtk.Window` / `Adw.Window` message dialogs.
 - Confirmation prompts use `Adw.AlertDialog`; destructive responses get
@@ -44,6 +51,9 @@ The application is split across two files:
   of `Adw.PreferencesGroup`s — **not** `Adw.PreferencesPage`, whose internal
   `ScrolledWindow` would fix the dialog height and hide content revealed at runtime
   (e.g. the credentials group) behind a scrollbar.
+- One app-owned `BackgroundWorker` serializes list reads, host checks, and helper
+  operations. Only main-loop callbacks may access GTK. Cancel stale host/read
+  results; defer closing until an active privileged operation finishes.
 - Always escape user-controlled strings (mount paths, statuses) with
   `GLib.markup_escape_text` before passing them to widgets that render Pango markup.
 - About box uses `Adw.AboutDialog`.
@@ -67,9 +77,13 @@ The application is split across two files:
 - `packaging/appimage-helper.patch` rewrites the helper invocation so the AppImage
   re-execs itself under `pkexec`. It targets `mount_manager.py` (the installed filename),
   not the `mount-manager` symlink. Do not change the helper CLI surface
-  (`--helper {create|delete|upgrade|set-enabled}`) without updating this patch.
+  (`--helper {create|delete|upgrade|set-enabled|update-credentials}`) without updating this patch.
 - If you add a new top-level Python module that the GUI imports, you must add a matching
   `install` line in `packaging/build-appimage.sh`.
+
+- AppImage update information must use the GitHub Releases `latest` transport
+  with a version wildcard. Always generate zsync metadata with the public release
+  download URL; never embed a CI filesystem path or pin discovery to one version.
 
 ## Reference docs
 
