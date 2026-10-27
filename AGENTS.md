@@ -33,6 +33,9 @@ The application is split across two files:
 - To enumerate or clear rows in an `Adw.PreferencesGroup`, use
   `group.get_row(index)` — not `get_first_child()`, which returns the group's internal
   structure widgets, not the `ActionRow` children.
+- Confirmed TPM credential failures show a persistent recovery notice. Journal
+  checks must use the current boot and exact failed invocation, and ignore stale
+  errors after credentials are replaced.
 - Status / error messages are surfaced as `Adw.Toast` via `MainWindow.show_toast()`.
   Do not add new `Gtk.Window` / `Adw.Window` message dialogs.
 - Confirmation prompts use `Adw.AlertDialog`; destructive responses get

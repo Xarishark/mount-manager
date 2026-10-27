@@ -58,6 +58,18 @@ def apply_style_manager() -> None:
     """Hand color-scheme selection to libadwaita's preference tracker."""
     Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.DEFAULT)
     Gtk.Window.set_default_icon_name(APP_ICON_NAME)
+    notice_style = Gtk.CssProvider()
+    notice_style.load_from_data(b"""
+        .credential-notice {
+            background-color: alpha(@error_color, 0.12);
+            border: 1px solid alpha(@error_color, 0.4);
+            border-radius: 24px;
+            padding: 8px 14px;
+        }
+    """)
+    Gtk.StyleContext.add_provider_for_display(
+        Gdk.Display.get_default(), notice_style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+    )
 
 
 def mount_status_line(mount: DisplayedMount) -> str:
@@ -442,6 +454,25 @@ def run_gui() -> int:
             self.preferences_page = Adw.PreferencesPage()
             self.preferences_page.set_vexpand(True)
 
+            self.credential_notice = Adw.PreferencesGroup()
+            self.credential_notice.set_visible(False)
+            notice_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            notice_box.add_css_class("credential-notice")
+            notice_icon = Gtk.Image.new_from_icon_name("dialog-error-symbolic")
+            notice_icon.add_css_class("error")
+            notice_box.append(notice_icon)
+            notice_text = Gtk.Label(xalign=0)
+            notice_text.set_text(
+                "Saved credentials cannot be unlocked. This can happen after a BIOS update "
+                "or TPM reset. Use Edit Credentials in each affected share's menu to "
+                "re-enter its SMB username and password."
+            )
+            notice_text.set_wrap(True)
+            notice_text.set_hexpand(True)
+            notice_box.append(notice_text)
+            self.credential_notice.add(notice_box)
+            self.preferences_page.add(self.credential_notice)
+
             self.mount_group = Adw.PreferencesGroup()
             self.mount_group.set_separate_rows(True)
             self.preferences_page.add(self.mount_group)
@@ -469,6 +500,9 @@ def run_gui() -> int:
             mounts = load_displayed_mounts()
             self.empty_page.set_visible(not mounts)
             self.preferences_page.set_visible(bool(mounts))
+            self.credential_notice.set_visible(
+                any(mount.managed and mount.credentials_need_update for mount in mounts)
+            )
 
             for mount in mounts:
                 self.mount_group.add(self.row_for(mount))

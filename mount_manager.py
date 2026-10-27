@@ -105,6 +105,7 @@ class ManagedMount:
     active: bool = False
     needs_upgrade: bool = False
     status: str = "Unknown"
+    credentials_need_update: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,6 +118,7 @@ class DisplayedMount:
     needs_upgrade: bool
     managed: bool
     managed_record: ManagedMount | None = None
+    credentials_need_update: bool = False
 
 
 def parse_share_path(raw_value: str) -> SharePath:
@@ -733,7 +735,6 @@ def update_credentials(manager_id: str, username_raw: str, password_raw: str) ->
     reset_failed_units(record)
 
 
-
 def delete_mount_by_id(manager_id: str) -> None:
     delete_mount(load_record_by_id(manager_id))
 
@@ -755,6 +756,68 @@ def load_record_by_id(manager_id: str) -> ManagedMount:
     if record is None:
         raise ValidationError("Managed mount was not found.")
     return record
+
+
+def journal_has_tpm_credential_failure(journal: str) -> bool:
+    """Recognize the reported TPM failure, rather than every mount/login error."""
+    tpm_failure = False
+    credential_failure = False
+    for line in journal.splitlines():
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        message = entry.get("MESSAGE", "")
+        if not isinstance(message, str):
+            continue
+        tpm_failure |= "tpm key integrity check failed" in message.lower()
+        credential_failure |= (
+            str(entry.get("EXIT_STATUS", "")) == "243"
+            or "status=243/CREDENTIALS" in message
+            or "Failed at step CREDENTIALS" in message
+        )
+    return tpm_failure and credential_failure
+
+
+def mount_credentials_need_update(unit_name: str) -> bool:
+    """Check only a current failed invocation; never infer a BIOS update."""
+    command = [
+        "systemctl", "show", unit_name,
+        "--property=ActiveState,Result,InvocationID", "--no-pager",
+    ]
+    try:
+        snapshot = run_command(command, check=False, timeout=3)
+        if snapshot.returncode != 0:
+            return False
+        properties = dict(line.split("=", 1) for line in snapshot.stdout.splitlines() if "=" in line)
+        invocation = properties.get("InvocationID", "")
+        if (
+            properties.get("ActiveState") != "failed"
+            or properties.get("Result") != "exit-code"
+            or not re.fullmatch(r"[a-f0-9]{32}", invocation)
+            or invocation == "0" * 32
+        ):
+            return False
+        journal = run_command(
+            [
+                "journalctl", "--boot=0", f"--unit={unit_name}",
+                f"--invocation={invocation}", "--output=json", "--no-pager",
+                "--quiet", "--lines=100", "--output-fields=MESSAGE,EXIT_STATUS",
+            ],
+            check=False,
+            timeout=3,
+        )
+        if journal.returncode != 0 or not journal_has_tpm_credential_failure(journal.stdout):
+            return False
+        # Credentials may have been saved or the mount retried during the read.
+        current = run_command(command, check=False, timeout=3)
+        current_properties = dict(line.split("=", 1) for line in current.stdout.splitlines() if "=" in line)
+        return current.returncode == 0 and current_properties == properties
+    except MountManagerError:
+        # Journal access is optional. Do not prompt for root or guess a cause.
+        return False
 
 
 def load_record_from_metadata(path: Path) -> ManagedMount | None:
@@ -819,8 +882,13 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
     automount_active = systemd_is_active(automount_unit_name)
     mount_enabled = systemd_is_enabled(unit_name)
     active = automount_active and not needs_upgrade
+    credentials_need_update = (
+        not mounted and not needs_upgrade and mount_credentials_need_update(unit_name)
+    )
     if needs_upgrade:
         status = "Old version, please upgrade"
+    elif credentials_need_update:
+        status = "Credentials need updating"
     elif mounted and automount_active:
         status = "Mounted"
     elif mounted:
@@ -848,6 +916,7 @@ def load_record_from_metadata(path: Path) -> ManagedMount | None:
         active=active,
         needs_upgrade=needs_upgrade,
         status=status,
+        credentials_need_update=credentials_need_update,
     )
 
 
@@ -920,10 +989,14 @@ def load_displayed_mounts() -> list[DisplayedMount]:
             mount_point=record.mount_point,
             status=record.status,
             active=record.active,
-            openable=not record.needs_upgrade and (record.active or record.mounted),
+            openable=(
+                not record.needs_upgrade and not record.credentials_need_update
+                and (record.active or record.mounted)
+            ),
             needs_upgrade=record.needs_upgrade,
             managed=True,
             managed_record=record,
+            credentials_need_update=record.credentials_need_update,
         )
         for record in managed_records
     ]
@@ -1000,7 +1073,6 @@ def request_helper_update_credentials(record: ManagedMount, username: str, passw
         "update-credentials",
         {"manager_id": record.manager_id, "username": username, "password": password},
     )
-
 
 
 def request_helper_set_enabled(record: ManagedMount, enabled: bool) -> None:
