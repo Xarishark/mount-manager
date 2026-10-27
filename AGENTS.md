@@ -27,15 +27,19 @@ The application is split across two files:
 - Color scheme is delegated to `Adw.StyleManager` (`ColorScheme.DEFAULT`). Do not
   re-introduce custom CSS for theming or a custom color-scheme detector.
 - The mount list uses `Adw.PreferencesPage` → `Adw.PreferencesGroup` → `Adw.ActionRow`
-  per mount with the **hybrid row pattern**: switch + one inline primary suffix
-  (open-folder or Upgrade) + kebab `MenuButton` containing destructive actions.
+  per mount with a leading activation switch and inline suffix buttons ordered
+  open-folder (or Upgrade), Edit Credentials, then Delete. Delete always opens
+  the confirmation dialog.
   Unmanaged shares show a "Not managed" label and no controls.
 - To enumerate or clear rows in an `Adw.PreferencesGroup`, use
   `group.get_row(index)` — not `get_first_child()`, which returns the group's internal
   structure widgets, not the `ActionRow` children.
-- Confirmed TPM credential failures show a persistent recovery notice. Journal
-  checks must use the current boot and exact failed invocation, and ignore stale
-  errors after credentials are replaced.
+- Confirmed TPM credential failures also use a persistent notice above the mount
+  list and a steady red destructive-action style on affected Edit Credentials buttons.
+  The notice uses a compact red pill with one scoped CSS rule using semantic
+  error colors and the full explanation always visible. Affected share details
+  are dimmed and activation/folder access is disabled; Edit and Delete stay usable.
+  Do not override the global theme. Keep share subtitles to one line with status before path; full details stay in the tooltip.
 - Status / error messages are surfaced as `Adw.Toast` via `MainWindow.show_toast()`.
   Do not add new `Gtk.Window` / `Adw.Window` message dialogs.
 - Confirmation prompts use `Adw.AlertDialog`; destructive responses get

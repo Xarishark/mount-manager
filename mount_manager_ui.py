@@ -66,6 +66,10 @@ def apply_style_manager() -> None:
             border-radius: 24px;
             padding: 8px 14px;
         }
+        .credential-unavailable .title,
+        .credential-unavailable .subtitle {
+            opacity: 0.5;
+        }
     """)
     Gtk.StyleContext.add_provider_for_display(
         Gdk.Display.get_default(), notice_style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
@@ -73,8 +77,8 @@ def apply_style_manager() -> None:
 
 
 def mount_status_line(mount: DisplayedMount) -> str:
-    """Build the AdwActionRow subtitle: ``<mount_point> · <status>``."""
-    return f"{mount.mount_point} · {mount.status}"
+    """Keep status visible before a potentially long mount path."""
+    return f"{mount.status} · {mount.mount_point}"
 
 
 def run_gui() -> int:
@@ -400,7 +404,6 @@ def run_gui() -> int:
                 self.main_window.refresh()
                 self.main_window.show_toast(f"Credentials updated for {self.record.source}")
 
-
     class MainWindow(Adw.ApplicationWindow):
         def __init__(self, app: Adw.Application) -> None:
             super().__init__(application=app, title=APP_NAME)
@@ -464,7 +467,7 @@ def run_gui() -> int:
             notice_text = Gtk.Label(xalign=0)
             notice_text.set_text(
                 "Saved credentials cannot be unlocked. This can happen after a BIOS update "
-                "or TPM reset. Use Edit Credentials in each affected share's menu to "
+                "or TPM reset. Use the red pencil button beside each affected share to "
                 "re-enter its SMB username and password."
             )
             notice_text.set_wrap(True)
@@ -511,6 +514,9 @@ def run_gui() -> int:
             row = Adw.ActionRow()
             row.set_title(GLib_markup_escape(mount.source))
             row.set_subtitle(GLib_markup_escape(mount_status_line(mount)))
+            row.set_title_lines(1)
+            row.set_subtitle_lines(1)
+            row.set_tooltip_text(f"{mount.source}\n{mount_status_line(mount)}")
 
             if not mount.managed or mount.managed_record is None:
                 not_managed_label = Gtk.Label(label="Not managed")
@@ -520,12 +526,16 @@ def run_gui() -> int:
                 return row
 
             record = mount.managed_record
+            if mount.credentials_need_update:
+                row.add_css_class("credential-unavailable")
 
             mount_switch = Gtk.Switch()
             mount_switch.set_valign(Gtk.Align.CENTER)
             mount_switch.set_active(mount.active)
-            mount_switch.set_sensitive(not mount.needs_upgrade)
-            if mount.needs_upgrade:
+            mount_switch.set_sensitive(not mount.needs_upgrade and not mount.credentials_need_update)
+            if mount.credentials_need_update:
+                mount_switch.set_tooltip_text("Update credentials before using this share")
+            elif mount.needs_upgrade:
                 mount_switch.set_tooltip_text(
                     "Upgrade this older mount before enabling it"
                 )
@@ -537,11 +547,12 @@ def run_gui() -> int:
                     "notify::active",
                     lambda switch, _param: self.toggle_mount(record, switch),
                 )
-            row.add_suffix(mount_switch)
+            row.add_prefix(mount_switch)
 
             if mount.needs_upgrade:
                 upgrade_button = Gtk.Button(label="Upgrade")
                 upgrade_button.set_valign(Gtk.Align.CENTER)
+                upgrade_button.set_sensitive(not mount.credentials_need_update)
                 upgrade_button.set_tooltip_text(
                     "Upgrade mount units using the existing encrypted credentials"
                 )
@@ -552,41 +563,39 @@ def run_gui() -> int:
                 open_button = Gtk.Button.new_from_icon_name("folder-open-symbolic")
                 open_button.set_valign(Gtk.Align.CENTER)
                 open_button.add_css_class("flat")
-                open_button.set_sensitive(mount.openable)
+                open_button.set_sensitive(mount.openable and not mount.credentials_need_update)
                 open_button.set_tooltip_text(
-                    "Open mount folder"
-                    if mount.openable
-                    else "Enable on-demand access to open its folder"
+                    "Update credentials before opening this share"
+                    if mount.credentials_need_update else
+                    "Open mount folder" if mount.openable else
+                    "Enable on-demand access to open its folder"
                 )
                 open_button.connect(
                     "clicked", lambda _b: self.open_mount_folder(record)
                 )
                 row.add_suffix(open_button)
 
-            menu = Gio.Menu()
-            menu.append("Edit Credentials\u2026", f"row.update-credentials::{record.manager_id}")
-            menu.append("Delete\u2026", f"row.delete::{record.manager_id}")
-
-            row_action_group = Gio.SimpleActionGroup()
-            credentials_action = Gio.SimpleAction.new("update-credentials", GLib.VariantType.new("s"))
-            credentials_action.connect(
-                "activate", lambda _a, _p, r=record: UpdateCredentialsDialog(self, r).present(self)
+            credentials_button = Gtk.Button.new_from_icon_name("document-edit-symbolic")
+            credentials_button.set_valign(Gtk.Align.CENTER)
+            if mount.credentials_need_update:
+                credentials_button.add_css_class("destructive-action")
+                credentials_button.set_tooltip_text(
+                    "Credentials need updating: re-enter your SMB username and password"
+                )
+            else:
+                credentials_button.add_css_class("flat")
+                credentials_button.set_tooltip_text("Edit credentials")
+            credentials_button.connect(
+                "clicked", lambda _b: UpdateCredentialsDialog(self, record).present(self)
             )
-            row_action_group.add_action(credentials_action)
-            delete_action = Gio.SimpleAction.new("delete", GLib.VariantType.new("s"))
-            delete_action.connect(
-                "activate", lambda _a, _p, r=record: self.confirm_delete(r)
-            )
-            row_action_group.add_action(delete_action)
-            row.insert_action_group("row", row_action_group)
+            row.add_suffix(credentials_button)
 
-            menu_button = Gtk.MenuButton()
-            menu_button.set_valign(Gtk.Align.CENTER)
-            menu_button.set_icon_name("view-more-symbolic")
-            menu_button.add_css_class("flat")
-            menu_button.set_menu_model(menu)
-            menu_button.set_tooltip_text("More actions")
-            row.add_suffix(menu_button)
+            delete_button = Gtk.Button.new_from_icon_name("user-trash-symbolic")
+            delete_button.set_valign(Gtk.Align.CENTER)
+            delete_button.add_css_class("flat")
+            delete_button.set_tooltip_text("Delete share")
+            delete_button.connect("clicked", lambda _b: self.confirm_delete(record))
+            row.add_suffix(delete_button)
 
             return row
 
